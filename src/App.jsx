@@ -194,7 +194,8 @@ export default function App() {
   const [canvasToken, setCanvasToken] = useState(() => loadStorage('sai-canvas-token', ''));
 
   // Canvas
-  const [canvasItems, setCanvasItems] = useState([]);
+  const [canvasItems, setCanvasItems] = useState(() => loadStorage('sai-canvas-items', []));
+  const [canvasLastUpdated, setCanvasLastUpdated] = useState(() => loadStorage('sai-canvas-updated', null));
   const [canvasLoading, setCanvasLoading] = useState(false);
   const [canvasError, setCanvasError] = useState('');
   const [canvasTab, setCanvasTab] = useState('all');       // all | assignment | file | page | announcement
@@ -218,6 +219,8 @@ export default function App() {
   useEffect(() => { saveStorage('sai-canvas-url', canvasUrl); }, [canvasUrl]);
   useEffect(() => { saveStorage('sai-canvas-token', canvasToken); }, [canvasToken]);
   useEffect(() => { saveStorage('sai-websearch', webSearchEnabled); }, [webSearchEnabled]);
+  useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
+  useEffect(() => { saveStorage('sai-canvas-updated', canvasLastUpdated); }, [canvasLastUpdated]);
 
   // Auto-scroll
   useEffect(() => {
@@ -421,7 +424,11 @@ export default function App() {
   async function loadCanvas() {
     if (!canvasUrl || !canvasToken) return;
     setCanvasLoading(true); setCanvasError('');
-    try { setCanvasItems(await fetchAllCanvasData(canvasUrl, canvasToken)); }
+    try {
+      const data = await fetchAllCanvasData(canvasUrl, canvasToken);
+      setCanvasItems(data);
+      setCanvasLastUpdated(Date.now());
+    }
     catch (e) { setCanvasError(e.message); }
     finally { setCanvasLoading(false); }
   }
@@ -700,7 +707,14 @@ The AI will use this as context when answering your questions."
       {showCanvas && (
         <div className="side-panel canvas-hub">
           <div className="panel-header">
-            <h3>Canvas Hub</h3>
+            <div>
+              <h3>Canvas Hub</h3>
+              {canvasLastUpdated && (
+                <div className="canvas-last-updated">
+                  Last updated: {new Date(canvasLastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </div>
+              )}
+            </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button className="btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={loadCanvas}>Refresh</button>
               <button className="modal-close" onClick={() => setShowCanvas(false)}>{Icon.close}</button>

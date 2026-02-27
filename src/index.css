@@ -1813,3 +1813,14 @@ body {
 .toggle-sidebar-btn.active-icon {
   color: var(--accent);
 }
+/* Web search active highlight */
+.toggle-sidebar-btn.active-icon {
+  color: #a29bfe !important;
+}
+
+.canvas-last-updated {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 400;
+  margin-top: 2px;
+}
