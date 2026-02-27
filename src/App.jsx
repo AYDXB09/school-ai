@@ -159,11 +159,20 @@ function saveStorage(key, value) { localStorage.setItem(key, JSON.stringify(valu
 function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
 // ============================================================
-// TTS HELPER
+// TTS / CONTENT HELPERS
 // ============================================================
+function stripReasoning(text) {
+  if (!text) return '';
+  // Remove completed think blocks
+  let s = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  // Remove partial think blocks (at end of text)
+  s = s.replace(/<think>[\s\S]*$/gi, '');
+  return s.trim();
+}
+
 function stripMarkdown(text) {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+  let s = stripReasoning(text);
+  return s
     .replace(/#{1,6}\s/g, '')
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
@@ -401,7 +410,10 @@ export default function App() {
             updated[updated.length - 1] = { ...updated[updated.length - 1], content: cur };
             return updated;
           });
-          if (showVoiceMode) setVoiceModeText(cur);
+          if (showVoiceMode) {
+            const stripped = stripReasoning(cur);
+            setVoiceModeText(stripped || 'Thinking...');
+          }
         },
         () => {
           setIsStreaming(false);
@@ -853,14 +865,18 @@ export default function App() {
           <div className="voice-center-container">
             <div className={`voice-circle-animation ${isSpeaking ? 'speaking' : isRecording ? 'listening' : ''}`}></div>
             <div className="voice-conversation-container">
-              {messages.slice(-2).map((m, idx) => (
-                <div key={m.id || idx} className={`voice-message-bubble ${m.role}`}>
-                  {m.content}
-                </div>
-              ))}
-              {isStreaming && messages[messages.length - 1]?.role === 'assistant' && (
-                <div className="voice-text streaming">
-                  {voiceModeText}
+              {messages.slice(-2).map((m, idx) => {
+                const content = stripReasoning(m.content);
+                if (!content && m.role === 'assistant') return null;
+                return (
+                  <div key={m.id || idx} className={`voice-message-bubble ${m.role}`}>
+                    {content}
+                  </div>
+                );
+              })}
+              {isStreaming && messages[messages.length - 1]?.role === 'assistant' && !stripReasoning(messages[messages.length - 1].content) && (
+                <div className="voice-text thinking">
+                  Thinking...
                 </div>
               )}
               {!isStreaming && !isSpeaking && isRecording && (
