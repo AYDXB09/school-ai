@@ -116,11 +116,12 @@ const Icon = {
     </svg>
   ),
   voiceMode: (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-      <line x1="12" y1="19" x2="12" y2="22"></line>
-      <circle cx="12" cy="12" r="10" strokeWidth="1" strokeDasharray="2 2" opacity="0.5"></circle>
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M12 8L13 11L16 12L13 13L12 16L11 13L8 12L11 11L12 8Z" fill="currentColor">
+        <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite" />
+      </path>
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1" strokeDasharray="2 4" opacity="0.3" />
     </svg>
   )
 };
@@ -323,22 +324,30 @@ export default function App() {
     if ((!finalInput && attachments.length === 0) || isStreaming) return;
     if (!apiKey) { setShowSettings(true); return; }
 
+    let currentChats = [...chats];
     let chatId = activeChatId;
     const isVoiceSession = showVoiceMode;
-    let currentChat = chats.find(c => c.id === chatId);
+    let currentChat = currentChats.find(c => c.id === chatId);
 
     // VOICE CHAT ISOLATION
     if (isVoiceSession && (!chatId || !currentChat?.isVoice)) {
       const nc = { id: genId(), title: 'Voice Session', messages: [], createdAt: Date.now(), isVoice: true };
-      setChats(p => [nc, ...p]);
+      currentChats = [nc, ...currentChats];
+      setChats(currentChats);
       setActiveChatId(nc.id);
       chatId = nc.id;
+      currentChat = nc;
     } else if (!chatId) {
       const nc = { id: genId(), title: 'New Chat', messages: [], createdAt: Date.now() };
-      setChats(p => [nc, ...p]);
+      currentChats = [nc, ...currentChats];
+      setChats(currentChats);
       setActiveChatId(nc.id);
       chatId = nc.id;
+      currentChat = nc;
     }
+
+    // Get messages for the CURRENT active chat to avoid stale history
+    const currentMessages = currentChat?.messages || [];
 
     // Capture attachments and clear state
     const currentAtts = [...attachments];
@@ -356,6 +365,9 @@ export default function App() {
     const apiUserMsg = { role: 'user', content: userContent, id: userMsg.id };
     const asstMsg = { role: 'assistant', content: '', id: genId() };
 
+    updateMessages(chatId, (prev) => [...prev, userMsg, asstMsg]);
+    setIsStreaming(true);
+
     let systemContent = SYSTEM_PROMPT;
     if (transcript.trim()) systemContent += `\n\n## Class Transcript / Context Provided:\n${transcript.trim()}`;
 
@@ -372,48 +384,48 @@ export default function App() {
 
     const apiMessages = [
       { role: 'system', content: systemContent },
-      ...messages.map(m => ({ role: m.role, content: m.content })),
-      apiUserMsg,
+      ...currentMessages.map(m => ({ role: m.role, content: m.content })),
+      apiUserMsg
     ];
-    updateMessages(chatId, [...messages, userMsg, asstMsg]);
-    setInput('');
-    setAttachments([]);
-    setIsStreaming(true);
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
     let accumulated = '';
-    await streamChat(
-      apiMessages,
-      apiKey,
-      (chunk) => {
-        accumulated += chunk;
-        const cur = accumulated;
-        updateMessages(chatId, (prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...updated[updated.length - 1], content: cur };
-          return updated;
-        });
-        if (showVoiceMode) setVoiceModeText(cur);
-      },
-      () => {
-        setIsStreaming(false);
-        if (showVoiceMode && !voiceMuted) {
-          speakMessage({ id: asstMsg.id, content: accumulated }, true);
-        } else if (showVoiceMode && voiceMuted) {
-          // Restart STT immediately if muted
-          startVoiceModeSTT();
+    try {
+      await streamChat(
+        apiMessages,
+        apiKey,
+        (chunk) => {
+          accumulated += chunk;
+          const cur = accumulated;
+          updateMessages(chatId, (prev) => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { ...updated[updated.length - 1], content: cur };
+            return updated;
+          });
+          if (showVoiceMode) setVoiceModeText(cur);
+        },
+        () => {
+          setIsStreaming(false);
+          const finalTotal = accumulated;
+          if (showVoiceMode && !voiceMuted) {
+            speakMessage({ id: asstMsg.id, content: finalTotal }, true);
+          } else if (showVoiceMode && voiceMuted) {
+            startVoiceModeSTT();
+          }
+        },
+        (err) => {
+          updateMessages(chatId, (prev) => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { ...updated[updated.length - 1], content: `**Error:** ${err}` };
+            return updated;
+          });
+          setIsStreaming(false);
+          if (showVoiceMode) setVoiceModeText('Error connecting to AI. Please try again.');
         }
-      },
-      (err) => {
-        updateMessages(chatId, (prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...updated[updated.length - 1], content: `**Error:** ${err}` };
-          return updated;
-        });
-        setIsStreaming(false);
-        if (showVoiceMode) setVoiceModeText('Error connecting to AI.');
-      }
-    );
+      );
+    } catch (e) {
+      setIsStreaming(false);
+      if (showVoiceMode) setVoiceModeText('Error. Check your API key.');
+    }
   }
 
   function handleKeyDown(e) {
@@ -840,8 +852,22 @@ export default function App() {
 
           <div className="voice-center-container">
             <div className={`voice-circle-animation ${isSpeaking ? 'speaking' : isRecording ? 'listening' : ''}`}></div>
-            <div className="voice-text">
-              {voiceModeText}
+            <div className="voice-conversation-container">
+              {messages.slice(-2).map((m, idx) => (
+                <div key={m.id || idx} className={`voice-message-bubble ${m.role}`}>
+                  {m.content}
+                </div>
+              ))}
+              {isStreaming && messages[messages.length - 1]?.role === 'assistant' && (
+                <div className="voice-text streaming">
+                  {voiceModeText}
+                </div>
+              )}
+              {!isStreaming && !isSpeaking && isRecording && (
+                <div className="voice-text listening">
+                  {voiceModeText}
+                </div>
+              )}
             </div>
           </div>
 
