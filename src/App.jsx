@@ -318,25 +318,40 @@ export default function App() {
   }
 
   // ---- SEND MESSAGE ----
-  async function handleSend() {
-    if ((!input.trim() && attachments.length === 0) || isStreaming) return;
+  async function handleSend(forcedInput) {
+    const finalInput = (typeof forcedInput === 'string' ? forcedInput : input).trim();
+    if ((!finalInput && attachments.length === 0) || isStreaming) return;
     if (!apiKey) { setShowSettings(true); return; }
 
     let chatId = activeChatId;
-    if (!chatId) {
+    const isVoiceSession = showVoiceMode;
+    let currentChat = chats.find(c => c.id === chatId);
+
+    // VOICE CHAT ISOLATION
+    if (isVoiceSession && (!chatId || !currentChat?.isVoice)) {
+      const nc = { id: genId(), title: 'Voice Session', messages: [], createdAt: Date.now(), isVoice: true };
+      setChats(p => [nc, ...p]);
+      setActiveChatId(nc.id);
+      chatId = nc.id;
+    } else if (!chatId) {
       const nc = { id: genId(), title: 'New Chat', messages: [], createdAt: Date.now() };
       setChats(p => [nc, ...p]);
       setActiveChatId(nc.id);
       chatId = nc.id;
     }
 
-    // Build user message content (multimodal if images attached)
-    const hasImages = attachments.some(a => a.type === 'image');
-    const userContent = hasImages
-      ? buildContent(input.trim(), attachments)
-      : input.trim() + attachments.filter(a => a.type === 'text').map(a => `\n\n[File: ${a.name}]\n${a.content}`).join('');
+    // Capture attachments and clear state
+    const currentAtts = [...attachments];
+    setAttachments([]);
+    setInput('');
 
-    const displayText = input.trim() + (attachments.length > 0 ? `\n\n*[${attachments.map(a => a.name).join(', ')}]*` : '');
+    // Build user message content (multimodal if images attached)
+    const hasImages = currentAtts.some(a => a.type === 'image');
+    const userContent = hasImages
+      ? buildContent(finalInput, currentAtts)
+      : finalInput + currentAtts.filter(a => a.type === 'text').map(a => `\n\n[File: ${a.name}]\n${a.content}`).join('');
+
+    const displayText = finalInput + (currentAtts.length > 0 ? `\n\n*[${currentAtts.map(a => a.name).join(', ')}]*` : '');
     const userMsg = { role: 'user', content: displayText, id: genId() };
     const apiUserMsg = { role: 'user', content: userContent, id: userMsg.id };
     const asstMsg = { role: 'assistant', content: '', id: genId() };
@@ -534,6 +549,20 @@ export default function App() {
       // Turn on
       setShowVoiceMode(true);
       setVoiceModeText('SPEAK TO BEGIN');
+
+      // Ensure we are in a voice chat
+      const activeChat = chats.find(c => c.id === activeChatId);
+      if (!activeChat || !activeChat.isVoice) {
+        const recentVoice = chats.find(c => c.isVoice);
+        if (recentVoice) {
+          setActiveChatId(recentVoice.id);
+        } else {
+          const nc = { id: genId(), title: 'Voice Session', messages: [], createdAt: Date.now(), isVoice: true };
+          setChats(p => [nc, ...p]);
+          setActiveChatId(nc.id);
+        }
+      }
+
       startVoiceModeSTT();
     }
   }
@@ -618,7 +647,7 @@ export default function App() {
         <div className="chat-list">
           {chats.map(chat => (
             <div key={chat.id} className={`chat-item ${chat.id === activeChatId ? 'active' : ''}`} onClick={() => setActiveChatId(chat.id)}>
-              <span className="chat-icon">{Icon.chat}</span>
+              <span className="chat-icon">{chat.isVoice ? Icon.voiceMode : Icon.chat}</span>
               <span className="chat-title">{chat.title}</span>
               <button className="delete-btn" onClick={e => deleteChat(chat.id, e)}>{Icon.trash}</button>
             </div>
