@@ -1,126 +1,92 @@
-import { useState, useCallback } from 'react';
+import { useState, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import rehypeRaw from 'rehype-raw';
 
-// Chevron icon for thinking toggle
+// ─── Icons ────────────────────────────────────────────────────────────────────
+const ChevronRight = () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M9 18l6-6-6-6" />
+    </svg>
+);
 const ChevronDown = () => (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <path d="M6 9l6 6 6-6" />
     </svg>
 );
 
-const ChevronRight = () => (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M9 18l6-6-6-6" />
-    </svg>
-);
+// ─── Pre-process: extract thinking block from raw content ───────────────────
+// K2-Think-v2 model outputs thinking WITHOUT an opening <think> tag.
+// The format is: [thinking text]</think>[actual response]
+// We handle all known formats:
+//   A: <think>...</think>response   (standard)
+//   B: thinking...</think>response  (K2 default – no opening tag)
+//   C: <think>thinking...           (streaming, not closed yet)
+//   D: thinking...                  (streaming K2, </think> not received yet)
+function splitThinkingFromContent(raw, currentlyStreaming) {
+    if (!raw) return { thinking: null, response: '' };
 
-// Parses out <think>...</think> blocks from raw message content
-function parseThinkingBlocks(content) {
-    const parts = [];
-    const regex = /<think>([\s\S]*?)<\/think>/gi;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = regex.exec(content)) !== null) {
-        if (match.index > lastIndex) {
-            parts.push({ type: 'text', content: content.slice(lastIndex, match.index) });
-        }
-        parts.push({ type: 'thinking', content: match[1].trim() });
-        lastIndex = match.index + match[0].length;
+    // Format A: both <think> and </think> present
+    const fullRe = /<think>([\s\S]*?)<\/think>/i;
+    const fullMatch = fullRe.exec(raw);
+    if (fullMatch) {
+        const thinking = fullMatch[1].trim();
+        const response = (raw.slice(0, fullMatch.index) + raw.slice(fullMatch.index + fullMatch[0].length)).trim();
+        return { thinking, response };
     }
 
-    // If we're mid-stream and the tag is open but not closed
-    const remaining = content.slice(lastIndex);
-    if (remaining) {
-        const openTag = remaining.indexOf('<think>');
-        if (openTag !== -1) {
-            const beforeTag = remaining.slice(0, openTag);
-            const thinkContent = remaining.slice(openTag + 7);
-            if (beforeTag) parts.push({ type: 'text', content: beforeTag });
-            if (thinkContent) parts.push({ type: 'thinking', content: thinkContent, open: true });
-        } else {
-            parts.push({ type: 'text', content: remaining });
-        }
+    // Format B: only </think> present (K2's actual format — no opening tag)
+    const closeRe = /<\/think>/i;
+    const closeMatch = closeRe.exec(raw);
+    if (closeMatch) {
+        const thinking = raw.slice(0, closeMatch.index).trim();
+        const response = raw.slice(closeMatch.index + closeMatch[0].length).trim();
+        return { thinking, response };
     }
 
-    return parts;
+    // Format C: <think> open tag but not closed yet (streaming)
+    const openIdx = raw.search(/<think>/i);
+    if (openIdx !== -1) {
+        const before = raw.slice(0, openIdx).trim();
+        const thinkContent = raw.slice(openIdx + 7).trim();
+        return { thinking: thinkContent, response: before, isStreaming: true };
+    }
+
+    // Format D: K2 streaming — content arriving but </think> not received yet.
+    // Only apply during active streaming to avoid treating normal replies as thinking.
+    if (currentlyStreaming) {
+        return { thinking: raw, response: '', isStreaming: true };
+    }
+
+    return { thinking: null, response: raw };
 }
 
-// Markdown renderers for custom styling
-const markdownComponents = {
-    // Tables
-    table: ({ children }) => (
-        <div className="md-table-wrapper">
-            <table>{children}</table>
-        </div>
-    ),
-    thead: ({ children }) => <thead>{children}</thead>,
-    th: ({ children }) => <th>{children}</th>,
-    td: ({ children }) => <td>{children}</td>,
-    // Blockquote as hint card
-    blockquote: ({ children }) => (
-        <blockquote className="md-blockquote">{children}</blockquote>
-    ),
-    // Code
-    code: ({ inline, className, children }) => {
-        if (inline) {
-            return <code className="md-code-inline">{children}</code>;
-        }
-        return (
-            <div className="md-code-block">
-                <pre><code>{children}</code></pre>
-            </div>
-        );
-    },
-    // Headings
-    h1: ({ children }) => <h1 className="md-h1">{children}</h1>,
-    h2: ({ children }) => <h2 className="md-h2">{children}</h2>,
-    h3: ({ children }) => <h3 className="md-h3">{children}</h3>,
-    // Paragraphs
-    p: ({ children }) => <p className="md-p">{children}</p>,
-    // Lists
-    ul: ({ children }) => <ul className="md-ul">{children}</ul>,
-    ol: ({ children }) => <ol className="md-ol">{children}</ol>,
-    li: ({ children }) => <li className="md-li">{children}</li>,
-    // Strong / em
-    strong: ({ children }) => <strong className="md-strong">{children}</strong>,
-    em: ({ children }) => <em className="md-em">{children}</em>,
-    // Horizontal rule
-    hr: () => <hr className="md-hr" />,
-    // Links
-    a: ({ href, children }) => (
-        <a href={href} target="_blank" rel="noopener noreferrer" className="md-link">{children}</a>
-    ),
-};
 
-// ThinkingBlock: collapsible "Thinking..." section
+
+// ─── Thinking Block ───────────────────────────────────────────────────────────
 function ThinkingBlock({ content, isStreaming }) {
-    const [expanded, setExpanded] = useState(false);
+    const [open, setOpen] = useState(false);    // STARTS COLLAPSED
 
     return (
         <div className="thinking-block">
-            <button
-                className="thinking-toggle"
-                onClick={() => setExpanded(e => !e)}
-            >
-                <span className="thinking-icon">
-                    {expanded ? <ChevronDown /> : <ChevronRight />}
-                </span>
+            <button className="thinking-toggle" onClick={() => setOpen(o => !o)}>
+                <span className="thinking-icon">{open ? <ChevronDown /> : <ChevronRight />}</span>
                 <span className="thinking-label">
                     {isStreaming ? (
-                        <span className="thinking-live">
+                        <>
                             Thinking
                             <span className="thinking-dots">
                                 <span /><span /><span />
                             </span>
-                        </span>
-                    ) : 'Thinking'}
+                        </>
+                    ) : (
+                        'Thinking'
+                    )}
                 </span>
             </button>
-            {expanded && (
+            {open && (
                 <div className="thinking-content">
                     <pre>{content}</pre>
                 </div>
@@ -129,10 +95,40 @@ function ThinkingBlock({ content, isStreaming }) {
     );
 }
 
-// Main MessageRenderer
+// ─── Markdown component overrides ─────────────────────────────────────────────
+const mdComponents = {
+    // Swallow the raw <think> tag if it somehow leaks through to ReactMarkdown
+    think: () => null,
+
+    table: ({ children }) => (
+        <div className="md-table-wrapper"><table>{children}</table></div>
+    ),
+    thead: ({ children }) => <thead>{children}</thead>,
+    th: ({ children }) => <th>{children}</th>,
+    td: ({ children }) => <td>{children}</td>,
+    blockquote: ({ children }) => <blockquote className="md-blockquote">{children}</blockquote>,
+    code({ inline, children }) {
+        if (inline) return <code className="md-code-inline">{children}</code>;
+        return <div className="md-code-block"><pre><code>{children}</code></pre></div>;
+    },
+    h1: ({ children }) => <h1 className="md-h1">{children}</h1>,
+    h2: ({ children }) => <h2 className="md-h2">{children}</h2>,
+    h3: ({ children }) => <h3 className="md-h3">{children}</h3>,
+    p: ({ children }) => <p className="md-p">{children}</p>,
+    ul: ({ children }) => <ul className="md-ul">{children}</ul>,
+    ol: ({ children }) => <ol className="md-ol">{children}</ol>,
+    li: ({ children }) => <li className="md-li">{children}</li>,
+    strong: ({ children }) => <strong className="md-strong">{children}</strong>,
+    em: ({ children }) => <em className="md-em">{children}</em>,
+    hr: () => <hr className="md-hr" />,
+    a: ({ href, children }) => (
+        <a href={href} target="_blank" rel="noopener noreferrer" className="md-link">{children}</a>
+    ),
+};
+
+// ─── Main MessageRenderer ─────────────────────────────────────────────────────
 export function MessageRenderer({ content, isStreaming }) {
-    const parts = parseThinkingBlocks(content || '');
-    const hasOnlyThinking = parts.length > 0 && parts.every(p => p.type === 'thinking');
+    const { thinking, response, isStreaming: thinkStreaming } = splitThinkingFromContent(content, isStreaming);
 
     if (!content && isStreaming) {
         return (
@@ -144,29 +140,21 @@ export function MessageRenderer({ content, isStreaming }) {
 
     return (
         <div className="message-renderer">
-            {parts.map((part, i) => {
-                if (part.type === 'thinking') {
-                    return (
-                        <ThinkingBlock
-                            key={i}
-                            content={part.content}
-                            isStreaming={isStreaming && (i === parts.length - 1 || hasOnlyThinking)}
-                        />
-                    );
-                }
-                const trimmed = part.content.trim();
-                if (!trimmed) return null;
-                return (
-                    <ReactMarkdown
-                        key={i}
-                        remarkPlugins={[remarkGfm, remarkMath]}
-                        rehypePlugins={[rehypeKatex]}
-                        components={markdownComponents}
-                    >
-                        {trimmed}
-                    </ReactMarkdown>
-                );
-            })}
+            {thinking !== null && (
+                <ThinkingBlock
+                    content={thinking}
+                    isStreaming={isStreaming && thinkStreaming}
+                />
+            )}
+            {response && (
+                <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex, rehypeRaw]}
+                    components={mdComponents}
+                >
+                    {response}
+                </ReactMarkdown>
+            )}
         </div>
     );
 }

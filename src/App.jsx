@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { streamChat } from './api';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { streamChat, buildContent } from './api';
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { fetchAllAssignments, formatDueDate, isDueOverdue } from './canvasApi';
 import { MessageRenderer } from './MessageRenderer';
@@ -61,6 +61,11 @@ const Icon = {
   book: (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 19.5A2.5 2.5 0 016.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+    </svg>
+  ),
+  paperclip: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
     </svg>
   ),
   clipboard: (
@@ -180,6 +185,8 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speakingMsgId, setSpeakingMsgId] = useState(null);
+  // File attachments: [{ id, name, type:'image'|'text'|'audio', base64?, mimeType?, content? }]
+  const [attachments, setAttachments] = useState([]);
 
   // Settings
   const [apiKey, setApiKey] = useState(() => loadStorage('sai-apikey', 'IFM-WkjDZvTiR3M7dwqV'));
@@ -195,6 +202,7 @@ export default function App() {
   const chatEndRef = useRef(null);
   const textareaRef = useRef(null);
   const recognitionRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   // Persist
   useEffect(() => { saveStorage('sai-chats', chats); }, [chats]);
@@ -238,9 +246,48 @@ export default function App() {
     }));
   }
 
+  // ---- FILE UPLOAD ----
+  const handleFileSelect = useCallback(async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const newAtts = [];
+    for (const file of files) {
+      const id = genId();
+      if (file.type.startsWith('image/')) {
+        const base64 = await fileToBase64(file);
+        newAtts.push({ id, name: file.name, type: 'image', base64, mimeType: file.type });
+      } else if (file.type.startsWith('text/') || file.name.endsWith('.pdf') || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
+        const text = await file.text();
+        newAtts.push({ id, name: file.name, type: 'text', content: text });
+      } else if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
+        // For video/audio: attempt speech recognition via browser, or just note the file
+        newAtts.push({ id, name: file.name, type: 'text', content: `[${file.name} was attached. Audio/video transcription is not supported in the browser. Please paste a transcript manually in the Class Transcript panel.]` });
+      } else {
+        // Unknown types - try as text
+        try { const text = await file.text(); newAtts.push({ id, name: file.name, type: 'text', content: text }); }
+        catch { newAtts.push({ id, name: file.name, type: 'text', content: `[Could not read ${file.name}]` }); }
+      }
+    }
+    setAttachments(prev => [...prev, ...newAtts]);
+    e.target.value = '';
+  }, []);
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function removeAttachment(id) {
+    setAttachments(prev => prev.filter(a => a.id !== id));
+  }
+
   // ---- SEND MESSAGE ----
   async function handleSend() {
-    if (!input.trim() || isStreaming) return;
+    if ((!input.trim() && attachments.length === 0) || isStreaming) return;
     if (!apiKey) { setShowSettings(true); return; }
 
     let chatId = activeChatId;
@@ -251,15 +298,28 @@ export default function App() {
       chatId = nc.id;
     }
 
-    const userMsg = { role: 'user', content: input.trim(), id: genId() };
+    // Build user message content (multimodal if images attached)
+    const hasImages = attachments.some(a => a.type === 'image');
+    const userContent = hasImages
+      ? buildContent(input.trim(), attachments)
+      : input.trim() + attachments.filter(a => a.type === 'text').map(a => `\n\n[File: ${a.name}]\n${a.content}`).join('');
+
+    const displayText = input.trim() + (attachments.length > 0 ? `\n\n*[${attachments.map(a => a.name).join(', ')}]*` : '');
+    const userMsg = { role: 'user', content: displayText, id: genId() };
+    const apiUserMsg = { role: 'user', content: userContent, id: userMsg.id };
     const asstMsg = { role: 'assistant', content: '', id: genId() };
 
     let systemContent = SYSTEM_PROMPT;
     if (transcript.trim()) systemContent += `\n\n## Class Transcript Provided:\n${transcript.trim()}`;
 
-    const apiMessages = [{ role: 'system', content: systemContent }, ...messages, userMsg];
+    const apiMessages = [
+      { role: 'system', content: systemContent },
+      ...messages.map(m => ({ role: m.role, content: m.content })),
+      apiUserMsg,
+    ];
     updateMessages(chatId, [...messages, userMsg, asstMsg]);
     setInput('');
+    setAttachments([]);
     setIsStreaming(true);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
@@ -508,8 +568,40 @@ export default function App() {
               <button onClick={() => setTranscript('')}>{Icon.close}</button>
             </div>
           )}
+          {/* File attachment preview */}
+          {attachments.length > 0 && (
+            <div className="attachment-strip">
+              {attachments.map(att => (
+                <div key={att.id} className="attachment-chip">
+                  {att.type === 'image' ? (
+                    <img src={`data:${att.mimeType};base64,${att.base64}`} alt={att.name} className="attachment-thumb" />
+                  ) : (
+                    <span className="attachment-icon">{Icon.paperclip}</span>
+                  )}
+                  <span className="attachment-name">{att.name}</span>
+                  <button className="attachment-remove" onClick={() => removeAttachment(att.id)}>{Icon.close}</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+            style={{ display: 'none' }}
+            multiple
+            accept="image/*,text/*,.pdf,.md,.txt,audio/*,video/*"
+          />
           <div className="input-wrapper">
             <div className="input-row">
+              <button
+                className="input-action-btn"
+                onClick={() => fileInputRef.current?.click()}
+                title="Attach file"
+                disabled={isStreaming}
+              >
+                {Icon.paperclip}
+              </button>
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -526,12 +618,11 @@ export default function App() {
                 {isStreaming ? (
                   <button className="send-btn stop" onClick={() => setIsStreaming(false)} title="Stop">{Icon.stop}</button>
                 ) : (
-                  <button className="send-btn" onClick={handleSend} disabled={!input.trim()} title="Send">{Icon.send}</button>
+                  <button className="send-btn" onClick={handleSend} disabled={!input.trim() && attachments.length === 0} title="Send">{Icon.send}</button>
                 )}
               </div>
             </div>
             <div className="input-footer">
-              <span>Shift + Enter for new line</span>
               <span>Powered by K2-Think-v2</span>
             </div>
           </div>

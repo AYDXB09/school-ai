@@ -2,9 +2,29 @@
 
 const API_URL = 'https://api.k2think.ai/v1/chat/completions';
 
-export async function streamChat(messages, apiKey, onChunk, onDone, onError) {
-    const controller = new AbortController();
+// Build content array for multimodal messages
+// attachments: [{ type: 'image', base64: '...', mimeType: 'image/png' }]
+function buildContent(text, attachments = []) {
+    if (!attachments || attachments.length === 0) return text;
 
+    const parts = [];
+    if (text) parts.push({ type: 'text', text });
+
+    for (const att of attachments) {
+        if (att.type === 'image') {
+            parts.push({
+                type: 'image_url',
+                image_url: { url: `data:${att.mimeType};base64,${att.base64}` },
+            });
+        } else if (att.type === 'text') {
+            parts.push({ type: 'text', text: `\n\n[Attached file: ${att.name}]\n${att.content}` });
+        }
+    }
+
+    return parts;
+}
+
+export async function streamChat(messages, apiKey, onChunk, onDone, onError) {
     try {
         const response = await fetch(API_URL, {
             method: 'POST',
@@ -18,7 +38,6 @@ export async function streamChat(messages, apiKey, onChunk, onDone, onError) {
                 messages,
                 stream: true,
             }),
-            signal: controller.signal,
         });
 
         if (!response.ok) {
@@ -42,29 +61,20 @@ export async function streamChat(messages, apiKey, onChunk, onDone, onError) {
                 const trimmed = line.trim();
                 if (!trimmed || !trimmed.startsWith('data:')) continue;
                 const data = trimmed.slice(5).trim();
-                if (data === '[DONE]') {
-                    onDone();
-                    return controller;
-                }
+                if (data === '[DONE]') { onDone(); return; }
 
                 try {
                     const parsed = JSON.parse(data);
                     const content = parsed.choices?.[0]?.delta?.content;
-                    if (content) {
-                        onChunk(content);
-                    }
-                } catch (e) {
-                    // Skip malformed JSON lines
-                }
+                    if (content) onChunk(content);
+                } catch { /* skip malformed */ }
             }
         }
 
         onDone();
     } catch (e) {
-        if (e.name !== 'AbortError') {
-            onError(e.message);
-        }
+        if (e.name !== 'AbortError') onError(e.message);
     }
-
-    return controller;
 }
+
+export { buildContent };
