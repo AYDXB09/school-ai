@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { streamChat, buildContent } from './api';
 import { SYSTEM_PROMPT } from './systemPrompt';
-import { fetchAllAssignments, formatDueDate, isDueOverdue } from './canvasApi';
+import { fetchAllCanvasData, formatDueDate, isDueOverdue } from './canvasApi';
 import { MessageRenderer } from './MessageRenderer';
 
 // ============================================================
@@ -194,9 +194,15 @@ export default function App() {
   const [canvasToken, setCanvasToken] = useState(() => loadStorage('sai-canvas-token', ''));
 
   // Canvas
-  const [assignments, setAssignments] = useState([]);
+  const [canvasItems, setCanvasItems] = useState([]);
   const [canvasLoading, setCanvasLoading] = useState(false);
   const [canvasError, setCanvasError] = useState('');
+  const [canvasTab, setCanvasTab] = useState('all');       // all | assignment | file | page | announcement
+  const [canvasSearch, setCanvasSearch] = useState('');
+  const [canvasCourse, setCanvasCourse] = useState('all');
+  const [canvasDateFrom, setCanvasDateFrom] = useState('');
+  const [canvasDateTo, setCanvasDateTo] = useState('');
+  const [webSearchEnabled, setWebSearchEnabled] = useState(() => loadStorage('sai-websearch', false));
 
   // Refs
   const chatEndRef = useRef(null);
@@ -210,6 +216,7 @@ export default function App() {
   useEffect(() => { saveStorage('sai-apikey', apiKey); }, [apiKey]);
   useEffect(() => { saveStorage('sai-canvas-url', canvasUrl); }, [canvasUrl]);
   useEffect(() => { saveStorage('sai-canvas-token', canvasToken); }, [canvasToken]);
+  useEffect(() => { saveStorage('sai-websearch', webSearchEnabled); }, [webSearchEnabled]);
 
   // Auto-scroll
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chats, activeChatId]);
@@ -310,7 +317,8 @@ export default function App() {
     const asstMsg = { role: 'assistant', content: '', id: genId() };
 
     let systemContent = SYSTEM_PROMPT;
-    if (transcript.trim()) systemContent += `\n\n## Class Transcript Provided:\n${transcript.trim()}`;
+    if (transcript.trim()) systemContent += `\n\n## Class Transcript / Context Provided:\n${transcript.trim()}`;
+    if (webSearchEnabled) systemContent += `\n\n[Web Search is enabled. If knowledge may be outdated, note it and advise the student to verify online.]`;
 
     const apiMessages = [
       { role: 'system', content: systemContent },
@@ -408,18 +416,37 @@ export default function App() {
   async function loadCanvas() {
     if (!canvasUrl || !canvasToken) return;
     setCanvasLoading(true); setCanvasError('');
-    try { setAssignments(await fetchAllAssignments(canvasUrl, canvasToken)); }
+    try { setCanvasItems(await fetchAllCanvasData(canvasUrl, canvasToken)); }
     catch (e) { setCanvasError(e.message); }
     finally { setCanvasLoading(false); }
   }
 
-  function useAssignment(a) {
-    setInput(`I need help with this assignment:\n\n**${a.name}**\nCourse: ${a.course_name}\nDue: ${formatDueDate(a.due_at)}\nPoints: ${a.points_possible || 'N/A'}\n\n${a.description}`);
+  // Derived list based on active filters
+  const canvasCourses = [...new Set(canvasItems.map(i => i.course_name))].sort();
+  const filteredCanvasItems = canvasItems.filter(item => {
+    if (canvasTab !== 'all' && item.type !== canvasTab) return false;
+    if (canvasCourse !== 'all' && item.course_name !== canvasCourse) return false;
+    if (canvasSearch && !item.name.toLowerCase().includes(canvasSearch.toLowerCase())) return false;
+    if (canvasDateFrom && item.date && new Date(item.date) < new Date(canvasDateFrom)) return false;
+    if (canvasDateTo && item.date && new Date(item.date) > new Date(canvasDateTo + 'T23:59:59')) return false;
+    return true;
+  });
+
+  function useCanvasItem(item) {
+    const dateLabel = item.date ? formatDueDate(item.date) : 'No date';
+    const pts = item.points_possible ? ` · ${item.points_possible} pts` : '';
+    setInput(`I need help with this ${item.type}:\n\n**${item.name}**\nCourse: ${item.course_name}\n${dateLabel}${pts}\n\n${item.description || ''}`);
     setShowCanvas(false);
     textareaRef.current?.focus();
   }
 
-  // ---- SAVE SETTINGS ----
+  function addCanvasToContext(item) {
+    const dateLabel = item.date ? formatDueDate(item.date) : 'No date';
+    const pts = item.points_possible ? ` · ${item.points_possible} pts` : '';
+    const contextText = `\n\n---\n[Canvas ${item.type}] **${item.name}** — ${item.course_name} — ${dateLabel}${pts}\n${item.description || ''}`;
+    setTranscript(prev => prev + contextText);
+  }
+
   function handleSaveSettings(e) {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -483,7 +510,6 @@ export default function App() {
 
       {/* ---- MAIN AREA ---- */}
       <main className="main-area">
-        {/* TOPBAR */}
         <header className="topbar">
           <div className="topbar-left">
             <button className="toggle-sidebar-btn" onClick={() => setSidebarOpen(!sidebarOpen)}>{Icon.menu}</button>
@@ -494,8 +520,18 @@ export default function App() {
             </span>
           </div>
           <div className="topbar-right">
+            <button
+              className={`toggle-sidebar-btn ${webSearchEnabled ? 'active-icon' : ''}`}
+              onClick={() => setWebSearchEnabled(p => !p)}
+              title={webSearchEnabled ? 'Web search ON (click to disable)' : 'Web search OFF (click to enable)'}
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
+              </svg>
+            </button>
             <button className="toggle-sidebar-btn" onClick={() => setShowTranscript(!showTranscript)} title="Class Transcript">{Icon.clipboard}</button>
-            <button className="toggle-sidebar-btn" onClick={() => { setShowCanvas(!showCanvas); if (!showCanvas && canvasUrl && canvasToken) loadCanvas(); }} title="Canvas Assignments">{Icon.book}</button>
+            <button className="toggle-sidebar-btn" onClick={() => { setShowCanvas(!showCanvas); if (!showCanvas && canvasUrl && canvasToken) loadCanvas(); }} title="Canvas Hub">{Icon.book}</button>
           </div>
         </header>
 
@@ -655,13 +691,50 @@ The AI will use this as context when answering your questions."
         </div>
       )}
 
-      {/* ---- CANVAS PANEL ---- */}
+      {/* ---- CANVAS HUB PANEL ---- */}
       {showCanvas && (
-        <div className="side-panel">
+        <div className="side-panel canvas-hub">
           <div className="panel-header">
-            <h3>Canvas Assignments</h3>
-            <button className="modal-close" onClick={() => setShowCanvas(false)}>{Icon.close}</button>
+            <h3>Canvas Hub</h3>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button className="btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={loadCanvas}>Refresh</button>
+              <button className="modal-close" onClick={() => setShowCanvas(false)}>{Icon.close}</button>
+            </div>
           </div>
+
+          {/* Tabs */}
+          <div className="canvas-tabs">
+            {['all', 'assignment', 'file', 'page', 'announcement'].map(tab => (
+              <button key={tab} className={`canvas-tab ${canvasTab === tab ? 'active' : ''}`} onClick={() => setCanvasTab(tab)}>
+                {tab === 'all' ? 'All' : tab.charAt(0).toUpperCase() + tab.slice(1) + 's'}
+              </button>
+            ))}
+          </div>
+
+          {/* Filters */}
+          {canvasItems.length > 0 && (
+            <div className="canvas-filters">
+              <input
+                className="canvas-search"
+                placeholder="Search..."
+                value={canvasSearch}
+                onChange={e => setCanvasSearch(e.target.value)}
+              />
+              <select className="canvas-select" value={canvasCourse} onChange={e => setCanvasCourse(e.target.value)}>
+                <option value="all">All Courses</option>
+                {canvasCourses.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <div className="canvas-date-row">
+                <input type="date" className="canvas-date" value={canvasDateFrom} onChange={e => setCanvasDateFrom(e.target.value)} title="From date" />
+                <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>to</span>
+                <input type="date" className="canvas-date" value={canvasDateTo} onChange={e => setCanvasDateTo(e.target.value)} title="To date" />
+                {(canvasDateFrom || canvasDateTo) && (
+                  <button className="canvas-clear-date" onClick={() => { setCanvasDateFrom(''); setCanvasDateTo(''); }} title="Clear dates">{Icon.close}</button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="panel-body">
             {!canvasUrl || !canvasToken ? (
               <div className="panel-empty">
@@ -672,27 +745,40 @@ The AI will use this as context when answering your questions."
             ) : canvasLoading ? (
               <div className="panel-empty">
                 <div className="typing-indicator" style={{ justifyContent: 'center', marginBottom: 12 }}><span /><span /><span /></div>
-                <p>Loading assignments...</p>
+                <p>Loading Canvas data...</p>
               </div>
             ) : canvasError ? (
               <div className="panel-empty">
                 <p style={{ color: 'var(--danger)', marginBottom: 12 }}>{canvasError}</p>
                 <button className="btn-primary" onClick={loadCanvas}>Retry</button>
               </div>
-            ) : assignments.length === 0 ? (
-              <div className="panel-empty"><p>No upcoming assignments found.</p><button className="btn-primary" onClick={loadCanvas} style={{ marginTop: 12 }}>Refresh</button></div>
+            ) : filteredCanvasItems.length === 0 ? (
+              <div className="panel-empty"><p>{canvasItems.length === 0 ? 'No data found. Click Refresh.' : 'No items match your filters.'}</p></div>
             ) : (
-              <>
-                <button className="btn-secondary" onClick={loadCanvas} style={{ width: '100%', marginBottom: 12 }}>Refresh</button>
-                {assignments.map(a => (
-                  <div key={a.id} className="assignment-card">
-                    <div className="assignment-name">{a.name}</div>
-                    <div className="assignment-course">{a.course_name}</div>
-                    <div className={`assignment-due ${isDueOverdue(a.due_at) ? 'overdue' : ''}`}>{formatDueDate(a.due_at)}{a.points_possible ? ` · ${a.points_possible} pts` : ''}</div>
-                    <button className="use-btn" onClick={() => useAssignment(a)}>Get Help</button>
+              filteredCanvasItems.map((item, idx) => (
+                <div key={item.id || idx} className={`assignment-card canvas-item-card ${item.type}`}>
+                  <div className="canvas-item-type-badge">{item.type}</div>
+                  <div className="assignment-name">{item.name}</div>
+                  <div className="assignment-course">{item.course_name}</div>
+                  {item.date && (
+                    <div className={`assignment-due ${item.type === 'assignment' && isDueOverdue(item.date) ? 'overdue' : ''}`}>
+                      {formatDueDate(item.date)}{item.points_possible ? ` · ${item.points_possible} pts` : ''}
+                    </div>
+                  )}
+                  {item.description && item.description !== 'Canvas Page' && (
+                    <div className="canvas-item-desc">{item.description.slice(0, 120)}{item.description.length > 120 ? '…' : ''}</div>
+                  )}
+                  <div className="canvas-item-actions">
+                    <button className="use-btn" onClick={() => useCanvasItem(item)}>Get Help</button>
+                    <button className="btn-secondary canvas-ctx-btn" onClick={() => addCanvasToContext(item)} title="Add this item to AI context">
+                      + Context
+                    </button>
+                    {(item.html_url || item.url) && (
+                      <a className="btn-secondary canvas-ctx-btn" href={item.html_url || item.url} target="_blank" rel="noreferrer">Open ↗</a>
+                    )}
                   </div>
-                ))}
-              </>
+                </div>
+              ))
             )}
           </div>
         </div>
