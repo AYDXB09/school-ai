@@ -206,6 +206,7 @@ export default function App() {
 
   // Refs
   const chatEndRef = useRef(null);
+  const chatAreaRef = useRef(null);
   const textareaRef = useRef(null);
   const recognitionRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -219,7 +220,11 @@ export default function App() {
   useEffect(() => { saveStorage('sai-websearch', webSearchEnabled); }, [webSearchEnabled]);
 
   // Auto-scroll
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chats, activeChatId]);
+  useEffect(() => {
+    if (chatAreaRef.current) {
+      chatAreaRef.current.scrollTop = chatAreaRef.current.scrollHeight;
+    }
+  }, [chats, activeChatId]);
 
   const activeChat = chats.find(c => c.id === activeChatId);
   const messages = activeChat?.messages || [];
@@ -536,7 +541,7 @@ export default function App() {
         </header>
 
         {/* CHAT AREA */}
-        <div className="chat-area">
+        <div className="chat-area" ref={chatAreaRef}>
           {!activeChatId || messages.length === 0 ? (
             <div className="welcome-screen">
               <SchoolAILogo size={64} />
