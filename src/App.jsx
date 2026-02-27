@@ -204,6 +204,7 @@ export default function App() {
   const [canvasDateFrom, setCanvasDateFrom] = useState('');
   const [canvasDateTo, setCanvasDateTo] = useState('');
   const [webSearchEnabled, setWebSearchEnabled] = useState(() => loadStorage('sai-websearch', false));
+  const [emojisEnabled, setEmojisEnabled] = useState(() => loadStorage('sai-emojis', false));
 
   // Refs
   const chatEndRef = useRef(null);
@@ -219,6 +220,8 @@ export default function App() {
   useEffect(() => { saveStorage('sai-canvas-url', canvasUrl); }, [canvasUrl]);
   useEffect(() => { saveStorage('sai-canvas-token', canvasToken); }, [canvasToken]);
   useEffect(() => { saveStorage('sai-websearch', webSearchEnabled); }, [webSearchEnabled]);
+  useEffect(() => { saveStorage('sai-emojis', emojisEnabled); }, [emojisEnabled]);
+  useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
   useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
   useEffect(() => { saveStorage('sai-canvas-updated', canvasLastUpdated); }, [canvasLastUpdated]);
 
@@ -326,7 +329,17 @@ export default function App() {
 
     let systemContent = SYSTEM_PROMPT;
     if (transcript.trim()) systemContent += `\n\n## Class Transcript / Context Provided:\n${transcript.trim()}`;
+
+    // Add strict style instructions
     if (webSearchEnabled) systemContent += `\n\n[Web Search is enabled. If knowledge may be outdated, note it and advise the student to verify online.]`;
+
+    if (emojisEnabled) {
+      systemContent += `\n\n[STYLE RULE: You MAY use emojis in your responses to be engaging.]`;
+    } else {
+      systemContent += `\n\n[STYLE RULE: STRICTLY FORBIDDEN: NEVER use emojis in any part of your response. Use professional formatting instead.]`;
+    }
+
+    systemContent += `\n\n[STYLE RULE: STRICTLY FORBIDDEN: NEVER use em dashes (—). Use a comma or colon instead.]`;
 
     const apiMessages = [
       { role: 'system', content: systemContent },
@@ -465,6 +478,7 @@ export default function App() {
     setApiKey(fd.get('apiKey'));
     setCanvasUrl(fd.get('canvasUrl'));
     setCanvasToken(fd.get('canvasToken'));
+    setEmojisEnabled(fd.get('emojisEnabled') === 'on');
     setShowSettings(false);
   }
 
@@ -532,16 +546,6 @@ export default function App() {
             </span>
           </div>
           <div className="topbar-right">
-            <button
-              className={`toggle-sidebar-btn ${webSearchEnabled ? 'active-icon' : ''}`}
-              onClick={() => setWebSearchEnabled(p => !p)}
-              title={webSearchEnabled ? 'Web search ON (click to disable)' : 'Web search OFF (click to enable)'}
-            >
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
-              </svg>
-            </button>
             <button className="toggle-sidebar-btn" onClick={() => setShowTranscript(!showTranscript)} title="Class Transcript">{Icon.clipboard}</button>
             <button className="toggle-sidebar-btn" onClick={() => { setShowCanvas(!showCanvas); if (!showCanvas && canvasUrl && canvasToken) loadCanvas(); }} title="Canvas Hub">{Icon.book}</button>
           </div>
@@ -642,14 +646,27 @@ export default function App() {
           />
           <div className="input-wrapper">
             <div className="input-row">
-              <button
-                className="input-action-btn"
-                onClick={() => fileInputRef.current?.click()}
-                title="Attach file"
-                disabled={isStreaming}
-              >
-                {Icon.paperclip}
-              </button>
+              <div className="input-actions-left">
+                <button
+                  className="input-action-btn"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach file"
+                  disabled={isStreaming}
+                >
+                  {Icon.paperclip}
+                </button>
+                <button
+                  className={`input-action-btn ${webSearchEnabled ? 'active-icon' : ''}`}
+                  onClick={() => setWebSearchEnabled(p => !p)}
+                  title={webSearchEnabled ? 'Web search ON' : 'Web search OFF'}
+                  disabled={isStreaming}
+                >
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
+                  </svg>
+                </button>
+              </div>
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -826,6 +843,12 @@ The AI will use this as context when answering your questions."
                 <label>Canvas API Token</label>
                 <input type="password" name="canvasToken" defaultValue={canvasToken} placeholder="Canvas access token" />
                 <div className="hint">Canvas: Account &gt; Settings &gt; Approved Integrations &gt; New Access Token</div>
+              </div>
+              <div className="form-group checkbox-group">
+                <label className="checkbox-label">
+                  <input type="checkbox" name="emojisEnabled" defaultChecked={emojisEnabled} />
+                  <span>Enable Emojis in AI responses</span>
+                </label>
               </div>
               <div className="form-actions">
                 <button type="button" className="btn-secondary" onClick={() => setShowSettings(false)}>Cancel</button>

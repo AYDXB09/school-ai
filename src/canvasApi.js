@@ -67,11 +67,39 @@ export async function fetchCanvasPages(canvasUrl, apiToken, courseId) {
 export async function fetchAllCanvasData(canvasUrl, apiToken) {
     try {
         const courses = await fetchCanvasCourses(canvasUrl, apiToken);
-        const allData = [];
         const courseIds = courses.map(c => c.id);
 
-        // Fetch announcements for all courses at once
-        const announcements = await fetchCanvasAnnouncements(canvasUrl, apiToken, courseIds);
+        // Fetch announcements for all courses at once (already efficient)
+        const announcementsPromise = fetchCanvasAnnouncements(canvasUrl, apiToken, courseIds);
+
+        // Fetch assignments, files, and pages in parallel for ALL courses
+        const courseDataPromises = courses.map(async (course) => {
+            try {
+                const [assignments, files, pages] = await Promise.all([
+                    fetchCanvasAssignments(canvasUrl, apiToken, course.id),
+                    fetchCanvasFiles(canvasUrl, apiToken, course.id),
+                    fetchCanvasPages(canvasUrl, apiToken, course.id)
+                ]);
+
+                return {
+                    course,
+                    assignments,
+                    files,
+                    pages
+                };
+            } catch (e) {
+                console.warn(`Failed to fetch specific data for course ${course.id}:`, e);
+                return { course, assignments: [], files: [], pages: [] };
+            }
+        });
+
+        const results = await Promise.all([announcementsPromise, ...courseDataPromises]);
+        const announcements = results[0];
+        const courseResults = results.slice(1);
+
+        const allData = [];
+
+        // Add announcements
         allData.push(...announcements.map(a => ({
             type: 'announcement',
             id: a.id,
@@ -82,61 +110,52 @@ export async function fetchAllCanvasData(canvasUrl, apiToken) {
             html_url: a.html_url
         })));
 
-        // Fetch Assignments, Files, and Pages per course
-        for (const course of courses) {
-            try {
-                // Assignments
-                const assignments = await fetchCanvasAssignments(canvasUrl, apiToken, course.id);
-                allData.push(...assignments.map(a => ({
-                    type: 'assignment',
-                    id: a.id,
-                    name: a.name,
-                    description: a.description ? stripHtml(a.description) : 'No description',
-                    date: a.due_at,
-                    course_name: course.name,
-                    points_possible: a.points_possible,
-                    html_url: a.html_url
-                })));
+        // Add assignments, files, and pages
+        for (const res of courseResults) {
+            const course = res.course;
 
-                // Files
-                const files = await fetchCanvasFiles(canvasUrl, apiToken, course.id);
-                allData.push(...files.map(f => ({
-                    type: 'file',
-                    id: f.id,
-                    name: f.display_name,
-                    description: `File type: ${f['content-type'] || 'Unknown'}. Size: ${(f.size / 1024).toFixed(1)} KB`,
-                    date: f.created_at,
-                    course_name: course.name,
-                    url: f.url
-                })));
+            // Assignments
+            allData.push(...res.assignments.map(a => ({
+                type: 'assignment',
+                id: a.id,
+                name: a.name,
+                description: a.description ? stripHtml(a.description) : 'No description',
+                date: a.due_at,
+                course_name: course.name,
+                points_possible: a.points_possible,
+                html_url: a.html_url
+            })));
 
-                // Pages
-                const pages = await fetchCanvasPages(canvasUrl, apiToken, course.id);
-                allData.push(...pages.map(p => ({
-                    type: 'page',
-                    id: p.page_id || p.url,
-                    name: p.title,
-                    description: 'Canvas Page',
-                    date: p.updated_at,
-                    course_name: course.name,
-                    html_url: p.html_url
-                })));
-            } catch (e) {
-                console.warn(`Failed to fetch data for course ${course.id}:`, e);
-            }
+            // Files
+            allData.push(...res.files.map(f => ({
+                type: 'file',
+                id: f.id,
+                name: f.display_name,
+                description: `File type: ${f['content-type'] || 'Unknown'}. Size: ${(f.size / 1024).toFixed(1)} KB`,
+                date: f.created_at,
+                course_name: course.name,
+                url: f.url
+            })));
+
+            // Pages
+            allData.push(...res.pages.map(p => ({
+                type: 'page',
+                id: p.page_id || p.url,
+                name: p.title,
+                description: 'Canvas Page',
+                date: p.updated_at,
+                course_name: course.name,
+                html_url: p.html_url
+            })));
         }
 
-        // Sort everything by date (newest/upcoming first)
+        // Sort everything by date (newest first)
         allData.sort((a, b) => {
             if (!a.date) return 1;
             if (!b.date) return -1;
-            // For assignments, we usually want upcoming due dates first.
-            // For announcements/files/pages, we want newest first.
-            // We'll normalize to a basic descending sort for simplicity, 
-            // except assignments where we might prefer ascending if it's in the future.
             const dateA = new Date(a.date).getTime();
             const dateB = new Date(b.date).getTime();
-            return dateB - dateA; // Newest first
+            return dateB - dateA;
         });
 
         return allData;

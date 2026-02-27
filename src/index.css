@@ -1824,3 +1824,27 @@ body {
   font-weight: 400;
   margin-top: 2px;
 }
+
+.input-actions-left {
+  display: flex;
+  gap: 4px;
+}
+
+.checkbox-group {
+  margin-top: 20px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
