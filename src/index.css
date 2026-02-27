@@ -1848,3 +1848,129 @@ body {
   height: 18px;
   accent-color: var(--accent);
 }
+
+/* =========================================================
+   VOICE MODE OVERLAY
+   ========================================================= */
+.voice-mode-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: #000000;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: #fff;
+}
+
+.voice-close-btn {
+  position: absolute;
+  bottom: 40px;
+  right: 40px;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.voice-close-btn:hover { background: rgba(255, 255, 255, 0.2); }
+
+.voice-mute-btn {
+  position: absolute;
+  bottom: 40px;
+  left: 40px;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.voice-mute-btn:hover { background: rgba(255, 255, 255, 0.2); }
+.voice-mute-btn.muted {
+  background: rgba(231, 76, 60, 0.2);
+  color: #e74c3c;
+}
+
+.voice-center-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 600px;
+}
+
+/* Animated Halftone Circle */
+.voice-circle-animation {
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, rgba(0,0,0,0) 70%);
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: slowPulse 4s infinite alternate ease-in-out;
+}
+
+.voice-circle-animation.listening {
+  border-color: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 0 40px rgba(255, 255, 255, 0.1);
+  animation: pulseListen 1.5s infinite alternate ease-in-out;
+}
+
+.voice-circle-animation.speaking {
+  border: none;
+  background: radial-gradient(circle, rgba(162, 155, 254, 0.2) 0%, rgba(0,0,0,0) 70%);
+  box-shadow: 0 0 60px rgba(162, 155, 254, 0.3);
+  animation: pulseSpeak 1s infinite alternate ease-in-out;
+}
+
+.voice-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: 'Inter', monospace;
+  font-size: 14px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  text-align: center;
+  width: 80%;
+  pointer-events: none;
+  text-shadow: 0 2px 10px rgba(0,0,0,0.8);
+  line-height: 1.5;
+}
+
+@keyframes slowPulse {
+  0% { transform: scale(0.95); opacity: 0.5; }
+  100% { transform: scale(1.05); opacity: 0.8; }
+}
+
+@keyframes pulseListen {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 60px rgba(255,255,255,0.2); }
+}
+
+@keyframes pulseSpeak {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(1.15); opacity: 1; box-shadow: 0 0 80px rgba(162, 155, 254, 0.5); }
+}

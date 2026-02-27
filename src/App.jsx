@@ -115,6 +115,14 @@ const Icon = {
       <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.32 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
     </svg>
   ),
+  voiceMode: (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+      <line x1="12" y1="19" x2="12" y2="22"></line>
+      <circle cx="12" cy="12" r="10" strokeWidth="1" strokeDasharray="2 2" opacity="0.5"></circle>
+    </svg>
+  )
 };
 
 // ============================================================
@@ -205,6 +213,12 @@ export default function App() {
   const [canvasDateTo, setCanvasDateTo] = useState('');
   const [webSearchEnabled, setWebSearchEnabled] = useState(() => loadStorage('sai-websearch', false));
   const [emojisEnabled, setEmojisEnabled] = useState(() => loadStorage('sai-emojis', false));
+
+  // Voice Mode
+  const [showVoiceMode, setShowVoiceMode] = useState(false);
+  const [voiceModeText, setVoiceModeText] = useState('SPEAK TO BEGIN');
+  const [voiceMuted, setVoiceMuted] = useState(false);
+  const voiceTimeoutRef = useRef(null);
 
   // Refs
   const chatEndRef = useRef(null);
@@ -364,8 +378,17 @@ export default function App() {
           updated[updated.length - 1] = { ...updated[updated.length - 1], content: cur };
           return updated;
         });
+        if (showVoiceMode) setVoiceModeText(cur);
       },
-      () => setIsStreaming(false),
+      () => {
+        setIsStreaming(false);
+        if (showVoiceMode && !voiceMuted) {
+          speakMessage({ id: asstMsg.id, content: accumulated }, true);
+        } else if (showVoiceMode && voiceMuted) {
+          // Restart STT immediately if muted
+          startVoiceModeSTT();
+        }
+      },
       (err) => {
         updateMessages(chatId, (prev) => {
           const updated = [...prev];
@@ -373,6 +396,7 @@ export default function App() {
           return updated;
         });
         setIsStreaming(false);
+        if (showVoiceMode) setVoiceModeText('Error connecting to AI.');
       }
     );
   }
@@ -411,8 +435,8 @@ export default function App() {
   }
 
   // ---- TTS ----
-  function speakMessage(msg) {
-    if (isSpeaking && speakingMsgId === msg.id) {
+  function speakMessage(msg, isVoiceModeFlow = false) {
+    if (isSpeaking && speakingMsgId === msg.id && !isVoiceModeFlow) {
       window.speechSynthesis.cancel();
       setIsSpeaking(false);
       setSpeakingMsgId(null);
@@ -422,15 +446,96 @@ export default function App() {
     const text = stripMarkdown(msg.content);
     if (!text) return;
     const utt = new SpeechSynthesisUtterance(text);
-    utt.rate = 1.0; utt.pitch = 1.05;
+    utt.rate = 1.0;
+    utt.pitch = 1.0;
+
+    // Prefer higher quality voices
     const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(v => v.lang.startsWith('en') && v.localService) || voices.find(v => v.lang.startsWith('en')) || voices[0];
+    let preferred = voices.find(v => v.name.includes('Online (Natural)') && v.lang.startsWith('en'));
+    if (!preferred) preferred = voices.find(v => (v.name.includes('Google') || v.name.includes('Premium')) && v.lang.startsWith('en'));
+    if (!preferred) preferred = voices.find(v => v.lang.startsWith('en') && v.localService);
+    if (!preferred) preferred = voices.find(v => v.lang.startsWith('en'));
+
     if (preferred) utt.voice = preferred;
-    utt.onend = () => { setIsSpeaking(false); setSpeakingMsgId(null); };
-    utt.onerror = () => { setIsSpeaking(false); setSpeakingMsgId(null); };
+
+    utt.onend = () => {
+      setIsSpeaking(false);
+      setSpeakingMsgId(null);
+      // Auto-restart listening in Voice Mode
+      if (showVoiceMode && !voiceMuted) {
+        startVoiceModeSTT();
+      }
+    };
+    utt.onerror = () => {
+      setIsSpeaking(false);
+      setSpeakingMsgId(null);
+    };
     setIsSpeaking(true);
     setSpeakingMsgId(msg.id);
     window.speechSynthesis.speak(utt);
+  }
+
+  // ---- VOICE MODE SPECIFIC STT ----
+  function startVoiceModeSTT() {
+    if (recognitionRef.current) recognitionRef.current.stop();
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+
+    setVoiceModeText('Listening...');
+    const r = new SR();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = 'en-US';
+
+    let finalText = '';
+
+    r.onresult = (ev) => {
+      let interim = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        if (ev.results[i].isFinal) finalText += ev.results[i][0].transcript + ' ';
+        else interim += ev.results[i][0].transcript;
+      }
+
+      const currentInput = finalText + interim;
+      setInput(currentInput);
+      setVoiceModeText(currentInput || 'Listening...');
+
+      // Auto-submit logic: clear existing timeout
+      if (voiceTimeoutRef.current) clearTimeout(voiceTimeoutRef.current);
+
+      // If we have text, set a timer to auto-send after user stops talking for 2s
+      if (currentInput.trim()) {
+        voiceTimeoutRef.current = setTimeout(() => {
+          r.stop();
+          setVoiceModeText('Thinking...');
+          handleSend(currentInput.trim());
+        }, 2000);
+      }
+    };
+
+    r.onerror = () => setVoiceModeText('SPEAK TO BEGIN');
+    r.onend = () => setIsRecording(false);
+
+    recognitionRef.current = r;
+    r.start();
+    setIsRecording(true);
+  }
+
+  function toggleVoiceMode() {
+    if (showVoiceMode) {
+      // Turn off
+      if (recognitionRef.current) recognitionRef.current.stop();
+      if (voiceTimeoutRef.current) clearTimeout(voiceTimeoutRef.current);
+      window.speechSynthesis.cancel();
+      setShowVoiceMode(false);
+      setIsRecording(false);
+      setIsSpeaking(false);
+    } else {
+      // Turn on
+      setShowVoiceMode(true);
+      setVoiceModeText('SPEAK TO BEGIN');
+      startVoiceModeSTT();
+    }
   }
 
   // ---- CANVAS ----
@@ -677,13 +782,16 @@ export default function App() {
                 disabled={isStreaming}
               />
               <div className="input-actions">
-                <button className={`input-action-btn ${isRecording ? 'recording' : ''}`} onClick={toggleRecording} title={isRecording ? 'Stop recording' : 'Voice input'}>
+                <button className={`input-action-btn ${showVoiceMode ? 'recording' : ''}`} onClick={toggleVoiceMode} title="Voice Mode">
+                  {Icon.voiceMode}
+                </button>
+                <button className={`input-action-btn ${isRecording ? 'recording' : ''}`} onClick={toggleRecording} title={isRecording ? 'Stop recording' : 'Dictate text'}>
                   {isRecording ? Icon.micOff : Icon.mic}
                 </button>
                 {isStreaming ? (
                   <button className="send-btn stop" onClick={() => setIsStreaming(false)} title="Stop">{Icon.stop}</button>
                 ) : (
-                  <button className="send-btn" onClick={handleSend} disabled={!input.trim() && attachments.length === 0} title="Send">{Icon.send}</button>
+                  <button className="send-btn" onClick={() => handleSend()} disabled={!input.trim() && attachments.length === 0} title="Send">{Icon.send}</button>
                 )}
               </div>
             </div>
@@ -693,6 +801,26 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      {/* ---- VOICE MODE OVERLAY ---- */}
+      {showVoiceMode && (
+        <div className="voice-mode-overlay">
+          <button className="voice-close-btn" onClick={toggleVoiceMode} title="Close Voice Mode">
+            {Icon.close}
+          </button>
+
+          <div className="voice-center-container">
+            <div className={`voice-circle-animation ${isSpeaking ? 'speaking' : isRecording ? 'listening' : ''}`}></div>
+            <div className="voice-text">
+              {voiceModeText}
+            </div>
+          </div>
+
+          <button className={`voice-mute-btn ${voiceMuted ? 'muted' : ''}`} onClick={() => setVoiceMuted(!voiceMuted)} title={voiceMuted ? 'Unmute AI' : 'Mute AI'}>
+            {voiceMuted ? Icon.micOff : Icon.mic}
+          </button>
+        </div>
+      )}
 
       {/* ---- TRANSCRIPT PANEL ---- */}
       {showTranscript && (
