@@ -336,7 +336,7 @@ export default function App() {
 
     let currentChats = [...chats];
     let chatId = activeChatId;
-    const isVoiceSession = showVoiceMode;
+    const isVoiceSession = voiceModeActiveRef.current;
     let currentChat = currentChats.find(c => c.id === chatId);
 
     // VOICE CHAT ISOLATION
@@ -411,7 +411,7 @@ export default function App() {
             updated[updated.length - 1] = { ...updated[updated.length - 1], content: cur };
             return updated;
           });
-          if (showVoiceMode) {
+          if (voiceModeActiveRef.current) {
             const stripped = stripReasoning(cur);
             setVoiceModeText(stripped || 'Thinking...');
           }
@@ -419,9 +419,9 @@ export default function App() {
         () => {
           setIsStreaming(false);
           const finalTotal = accumulated;
-          if (showVoiceMode && !voiceMuted) {
+          if (voiceModeActiveRef.current && !voiceMuted) {
             speakMessage({ id: asstMsg.id, content: finalTotal }, true);
-          } else if (showVoiceMode && voiceMuted) {
+          } else if (voiceModeActiveRef.current && voiceMuted) {
             startVoiceModeSTT();
           }
         },
@@ -432,12 +432,12 @@ export default function App() {
             return updated;
           });
           setIsStreaming(false);
-          if (showVoiceMode) setVoiceModeText('Error connecting to AI. Please try again.');
+          if (voiceModeActiveRef.current) setVoiceModeText('Error. Tap circle to retry.');
         }
       );
     } catch (e) {
       setIsStreaming(false);
-      if (showVoiceMode) setVoiceModeText('Error. Check your API key.');
+      if (voiceModeActiveRef.current) setVoiceModeText('Error. Check your API key.');
     }
   }
 
@@ -539,12 +539,16 @@ export default function App() {
     }
   }
 
-  function interruptVoice() {
+  function handleCircleClick() {
     if (isSpeaking) {
+      // Interrupt TTS and start listening
       window.speechSynthesis.cancel();
       setIsSpeaking(false);
       setSpeakingMsgId(null);
       setVoiceModeText('');
+      startVoiceModeSTT();
+    } else if (!isRecording) {
+      // Start listening
       startVoiceModeSTT();
     }
   }
@@ -901,19 +905,22 @@ export default function App() {
 
           <div className="voice-center-container">
             <div
-              className={`voice-circle-animation ${isSpeaking ? 'speaking' : isRecording ? 'listening' : ''}`}
-              onClick={interruptVoice}
-              style={{ cursor: isSpeaking ? 'pointer' : 'default' }}
-              title={isSpeaking ? 'Tap to interrupt' : ''}
+              className={`voice-circle-animation ${isSpeaking ? 'speaking' : isRecording ? 'listening' : isStreaming ? 'thinking' : 'idle'}`}
+              onClick={handleCircleClick}
+              style={{ cursor: 'pointer' }}
+              title={isSpeaking ? 'Tap to interrupt' : isRecording ? 'Listening...' : 'Tap to speak'}
             ></div>
             <div className="voice-text-display">
+              {isStreaming && !isSpeaking && (
+                <p className="voice-sentence thinking">{voiceModeText}</p>
+              )}
               {isSpeaking && voiceModeText && (
                 <p className="voice-sentence speaking">{voiceModeText}</p>
               )}
-              {isRecording && !isSpeaking && voiceModeText && voiceModeText !== 'SPEAK TO BEGIN' && (
+              {isRecording && !isSpeaking && !isStreaming && voiceModeText && (
                 <p className="voice-sentence listening">{voiceModeText}</p>
               )}
-              {!isSpeaking && !isRecording && (
+              {!isSpeaking && !isRecording && !isStreaming && (
                 <p className="voice-sentence idle">Tap the circle to speak</p>
               )}
               {isSpeaking && (

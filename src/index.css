@@ -2027,3 +2027,26 @@ body {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+/* Voice mode thinking and idle circle states */
+.voice-circle-animation.thinking {
+  animation: voicePulse 2s ease-in-out infinite;
+  border-color: rgba(162, 155, 254, 0.5);
+  background: radial-gradient(circle, rgba(162, 155, 254, 0.15) 0%, rgba(0,0,0,0) 70%);
+}
+
+.voice-circle-animation.idle {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.03) 0%, rgba(0,0,0,0) 70%);
+  transition: border-color 0.3s, background 0.3s;
+}
+
+.voice-circle-animation.idle:hover {
+  border-color: rgba(162, 155, 254, 0.4);
+  background: radial-gradient(circle, rgba(162, 155, 254, 0.08) 0%, rgba(0,0,0,0) 70%);
+}
+
+.voice-sentence.thinking {
+  color: #a29bfe;
+  font-style: italic;
+  animation: pulse 1.5s ease infinite;
+}
