@@ -242,6 +242,7 @@ export default function App() {
   const [canvasDateTo, setCanvasDateTo] = useState('');
   const [webSearchEnabled, setWebSearchEnabled] = useState(() => loadStorage('sai-websearch', false));
   const [emojisEnabled, setEmojisEnabled] = useState(() => loadStorage('sai-emojis', false));
+  const [fullCanvasContext, setFullCanvasContext] = useState(() => loadStorage('sai-full-canvas', false));
 
   // Voice Mode
   const [showVoiceMode, setShowVoiceMode] = useState(false);
@@ -265,6 +266,7 @@ export default function App() {
   useEffect(() => { saveStorage('sai-canvas-token', canvasToken); }, [canvasToken]);
   useEffect(() => { saveStorage('sai-websearch', webSearchEnabled); }, [webSearchEnabled]);
   useEffect(() => { saveStorage('sai-emojis', emojisEnabled); }, [emojisEnabled]);
+  useEffect(() => { saveStorage('sai-full-canvas', fullCanvasContext); }, [fullCanvasContext]);
   useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
   useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
   useEffect(() => { saveStorage('sai-canvas-updated', canvasLastUpdated); }, [canvasLastUpdated]);
@@ -399,6 +401,15 @@ export default function App() {
 
     let systemContent = SYSTEM_PROMPT;
     if (transcript.trim()) systemContent += `\n\n## Class Transcript / Context Provided:\n${transcript.trim()}`;
+
+    // Add Full Canvas Context if enabled
+    if (fullCanvasContext && canvasItems && canvasItems.length > 0) {
+      const canvasSummary = canvasItems
+        .map(item => `[${item.type}] ${item.title} (${item.course_name || 'General'}) - Due: ${item.due_at || 'No Date'}`)
+        .join('\n');
+      systemContent += `\n\n## YOUR COMPLETE CANVAS LMS CONTEXT:\nThe student has enabled full Canvas integration. You MUST use this data to answer questions about assignments, tests, schedules, and materials without asking them to select items. 
+Data follows:\n${canvasSummary}`;
+    }
 
     // Add strict style instructions
     if (webSearchEnabled) systemContent += `\n\n[Web Search is enabled. If knowledge may be outdated, note it and advise the student to verify online.]`;
@@ -698,6 +709,7 @@ export default function App() {
     setCanvasUrl(fd.get('canvasUrl'));
     setCanvasToken(fd.get('canvasToken'));
     setEmojisEnabled(fd.get('emojisEnabled') === 'on');
+    setFullCanvasContext(fd.get('fullCanvasContext') === 'on');
     setShowSettings(false);
   }
 
@@ -909,9 +921,9 @@ export default function App() {
                 )}
               </div>
             </div>
-            <div className="input-footer">
-              <span>Powered by K2-Think-v2</span>
-            </div>
+          </div>
+          <div className="input-footer">
+            <span>Powered by K2-Think-v2</span>
           </div>
         </div>
       </main>
@@ -953,172 +965,185 @@ export default function App() {
             {voiceMuted ? Icon.micOff : Icon.mic}
           </button>
         </div>
-      )}
+      )
+      }
 
       {/* ---- TRANSCRIPT PANEL ---- */}
-      {showTranscript && (
-        <div className="side-panel">
-          <div className="panel-header">
-            <h3>Class Transcript</h3>
-            <button className="modal-close" onClick={() => setShowTranscript(false)}>{Icon.close}</button>
-          </div>
-          <div className="panel-body">
-            <textarea
-              value={transcript}
-              onChange={e => setTranscript(e.target.value)}
-              placeholder="Paste your class transcript here, or use the microphone in the chat to transcribe live audio.
+      {
+        showTranscript && (
+          <div className="side-panel">
+            <div className="panel-header">
+              <h3>Class Transcript</h3>
+              <button className="modal-close" onClick={() => setShowTranscript(false)}>{Icon.close}</button>
+            </div>
+            <div className="panel-body">
+              <textarea
+                value={transcript}
+                onChange={e => setTranscript(e.target.value)}
+                placeholder="Paste your class transcript here, or use the microphone in the chat to transcribe live audio.
 
 The AI will use this as context when answering your questions."
-            />
+              />
+            </div>
+            <div className="panel-footer">
+              <button className="btn-secondary" onClick={() => setTranscript('')}>Clear</button>
+              <button className="btn-primary" onClick={() => {
+                setShowTranscript(false);
+                if (transcript.trim()) setInput(`Here is my class transcript for context:\n\n${transcript.trim()}\n\nCan you help me understand the key concepts from this lesson?`);
+              }}>Use in Chat</button>
+            </div>
           </div>
-          <div className="panel-footer">
-            <button className="btn-secondary" onClick={() => setTranscript('')}>Clear</button>
-            <button className="btn-primary" onClick={() => {
-              setShowTranscript(false);
-              if (transcript.trim()) setInput(`Here is my class transcript for context:\n\n${transcript.trim()}\n\nCan you help me understand the key concepts from this lesson?`);
-            }}>Use in Chat</button>
-          </div>
-        </div>
-      )}
+        )
+      }
 
       {/* ---- CANVAS HUB PANEL ---- */}
-      {showCanvas && (
-        <div className="side-panel canvas-hub">
-          <div className="panel-header">
-            <div>
-              <h3>Canvas Hub</h3>
-              {canvasLastUpdated && (
-                <div className="canvas-last-updated">
-                  Last updated: {new Date(canvasLastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </div>
-              )}
-            </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button className="btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={loadCanvas}>Refresh</button>
-              <button className="modal-close" onClick={() => setShowCanvas(false)}>{Icon.close}</button>
-            </div>
-          </div>
-
-          {/* Tabs */}
-          <div className="canvas-tabs">
-            {['all', 'assignment', 'file', 'page', 'announcement'].map(tab => (
-              <button key={tab} className={`canvas-tab ${canvasTab === tab ? 'active' : ''}`} onClick={() => setCanvasTab(tab)}>
-                {tab === 'all' ? 'All' : tab.charAt(0).toUpperCase() + tab.slice(1) + 's'}
-              </button>
-            ))}
-          </div>
-
-          {/* Filters */}
-          {canvasItems.length > 0 && (
-            <div className="canvas-filters">
-              <input
-                className="canvas-search"
-                placeholder="Search..."
-                value={canvasSearch}
-                onChange={e => setCanvasSearch(e.target.value)}
-              />
-              <select className="canvas-select" value={canvasCourse} onChange={e => setCanvasCourse(e.target.value)}>
-                <option value="all">All Courses</option>
-                {canvasCourses.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-              <div className="canvas-date-row">
-                <input type="date" className="canvas-date" value={canvasDateFrom} onChange={e => setCanvasDateFrom(e.target.value)} title="From date" />
-                <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>to</span>
-                <input type="date" className="canvas-date" value={canvasDateTo} onChange={e => setCanvasDateTo(e.target.value)} title="To date" />
-                {(canvasDateFrom || canvasDateTo) && (
-                  <button className="canvas-clear-date" onClick={() => { setCanvasDateFrom(''); setCanvasDateTo(''); }} title="Clear dates">{Icon.close}</button>
+      {
+        showCanvas && (
+          <div className="side-panel canvas-hub">
+            <div className="panel-header">
+              <div>
+                <h3>Canvas Hub</h3>
+                {canvasLastUpdated && (
+                  <div className="canvas-last-updated">
+                    Last updated: {new Date(canvasLastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </div>
                 )}
               </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button className="btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={loadCanvas}>Refresh</button>
+                <button className="modal-close" onClick={() => setShowCanvas(false)}>{Icon.close}</button>
+              </div>
             </div>
-          )}
 
-          <div className="panel-body">
-            {!canvasUrl || !canvasToken ? (
-              <div className="panel-empty">
-                <div className="panel-empty-icon">{Icon.layers}</div>
-                <p>Connect your Canvas LMS account in Settings to load your assignments.</p>
-                <button className="btn-primary" onClick={() => { setShowCanvas(false); setShowSettings(true); }}>Open Settings</button>
-              </div>
-            ) : canvasLoading ? (
-              <div className="panel-empty">
-                <div className="typing-indicator" style={{ justifyContent: 'center', marginBottom: 12 }}><span /><span /><span /></div>
-                <p>Loading Canvas data...</p>
-              </div>
-            ) : canvasError ? (
-              <div className="panel-empty">
-                <p style={{ color: 'var(--danger)', marginBottom: 12 }}>{canvasError}</p>
-                <button className="btn-primary" onClick={loadCanvas}>Retry</button>
-              </div>
-            ) : filteredCanvasItems.length === 0 ? (
-              <div className="panel-empty"><p>{canvasItems.length === 0 ? 'No data found. Click Refresh.' : 'No items match your filters.'}</p></div>
-            ) : (
-              filteredCanvasItems.map((item, idx) => (
-                <div key={item.id || idx} className={`assignment-card canvas-item-card ${item.type}`}>
-                  <div className="canvas-item-type-badge">{item.type}</div>
-                  <div className="assignment-name">{item.name}</div>
-                  <div className="assignment-course">{item.course_name}</div>
-                  {item.date && (
-                    <div className={`assignment-due ${item.type === 'assignment' && isDueOverdue(item.date) ? 'overdue' : ''}`}>
-                      {formatDueDate(item.date)}{item.points_possible ? ` · ${item.points_possible} pts` : ''}
-                    </div>
+            {/* Tabs */}
+            <div className="canvas-tabs">
+              {['all', 'assignment', 'file', 'page', 'announcement'].map(tab => (
+                <button key={tab} className={`canvas-tab ${canvasTab === tab ? 'active' : ''}`} onClick={() => setCanvasTab(tab)}>
+                  {tab === 'all' ? 'All' : tab.charAt(0).toUpperCase() + tab.slice(1) + 's'}
+                </button>
+              ))}
+            </div>
+
+            {/* Filters */}
+            {canvasItems.length > 0 && (
+              <div className="canvas-filters">
+                <input
+                  className="canvas-search"
+                  placeholder="Search..."
+                  value={canvasSearch}
+                  onChange={e => setCanvasSearch(e.target.value)}
+                />
+                <select className="canvas-select" value={canvasCourse} onChange={e => setCanvasCourse(e.target.value)}>
+                  <option value="all">All Courses</option>
+                  {canvasCourses.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <div className="canvas-date-row">
+                  <input type="date" className="canvas-date" value={canvasDateFrom} onChange={e => setCanvasDateFrom(e.target.value)} title="From date" />
+                  <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>to</span>
+                  <input type="date" className="canvas-date" value={canvasDateTo} onChange={e => setCanvasDateTo(e.target.value)} title="To date" />
+                  {(canvasDateFrom || canvasDateTo) && (
+                    <button className="canvas-clear-date" onClick={() => { setCanvasDateFrom(''); setCanvasDateTo(''); }} title="Clear dates">{Icon.close}</button>
                   )}
-                  {item.description && item.description !== 'Canvas Page' && (
-                    <div className="canvas-item-desc">{item.description.slice(0, 120)}{item.description.length > 120 ? '…' : ''}</div>
-                  )}
-                  <div className="canvas-item-actions">
-                    <button className="use-btn" onClick={() => useCanvasItem(item)}>Get Help</button>
-                    <button className="btn-secondary canvas-ctx-btn" onClick={() => addCanvasToContext(item)} title="Add this item to AI context">
-                      + Context
-                    </button>
-                    {(item.html_url || item.url) && (
-                      <a className="btn-secondary canvas-ctx-btn" href={item.html_url || item.url} target="_blank" rel="noreferrer">Open ↗</a>
-                    )}
-                  </div>
                 </div>
-              ))
+              </div>
             )}
+
+            <div className="panel-body">
+              {!canvasUrl || !canvasToken ? (
+                <div className="panel-empty">
+                  <div className="panel-empty-icon">{Icon.layers}</div>
+                  <p>Connect your Canvas LMS account in Settings to load your assignments.</p>
+                  <button className="btn-primary" onClick={() => { setShowCanvas(false); setShowSettings(true); }}>Open Settings</button>
+                </div>
+              ) : canvasLoading ? (
+                <div className="panel-empty">
+                  <div className="typing-indicator" style={{ justifyContent: 'center', marginBottom: 12 }}><span /><span /><span /></div>
+                  <p>Loading Canvas data...</p>
+                </div>
+              ) : canvasError ? (
+                <div className="panel-empty">
+                  <p style={{ color: 'var(--danger)', marginBottom: 12 }}>{canvasError}</p>
+                  <button className="btn-primary" onClick={loadCanvas}>Retry</button>
+                </div>
+              ) : filteredCanvasItems.length === 0 ? (
+                <div className="panel-empty"><p>{canvasItems.length === 0 ? 'No data found. Click Refresh.' : 'No items match your filters.'}</p></div>
+              ) : (
+                filteredCanvasItems.map((item, idx) => (
+                  <div key={item.id || idx} className={`assignment-card canvas-item-card ${item.type}`}>
+                    <div className="canvas-item-type-badge">{item.type}</div>
+                    <div className="assignment-name">{item.name}</div>
+                    <div className="assignment-course">{item.course_name}</div>
+                    {item.date && (
+                      <div className={`assignment-due ${item.type === 'assignment' && isDueOverdue(item.date) ? 'overdue' : ''}`}>
+                        {formatDueDate(item.date)}{item.points_possible ? ` · ${item.points_possible} pts` : ''}
+                      </div>
+                    )}
+                    {item.description && item.description !== 'Canvas Page' && (
+                      <div className="canvas-item-desc">{item.description.slice(0, 120)}{item.description.length > 120 ? '…' : ''}</div>
+                    )}
+                    <div className="canvas-item-actions">
+                      <button className="use-btn" onClick={() => useCanvasItem(item)}>Get Help</button>
+                      <button className="btn-secondary canvas-ctx-btn" onClick={() => addCanvasToContext(item)} title="Add this item to AI context">
+                        + Context
+                      </button>
+                      {(item.html_url || item.url) && (
+                        <a className="btn-secondary canvas-ctx-btn" href={item.html_url || item.url} target="_blank" rel="noreferrer">Open ↗</a>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )
+      }
 
       {/* ---- SETTINGS MODAL ---- */}
-      {showSettings && (
-        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Settings</h2>
-              <button className="modal-close" onClick={() => setShowSettings(false)}>{Icon.close}</button>
+      {
+        showSettings && (
+          <div className="modal-overlay" onClick={() => setShowSettings(false)}>
+            <div className="modal" onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Settings</h2>
+                <button className="modal-close" onClick={() => setShowSettings(false)}>{Icon.close}</button>
+              </div>
+              <form className="modal-body" onSubmit={handleSaveSettings}>
+                <div className="form-group">
+                  <label>MBZUAI API Key</label>
+                  <input type="password" name="apiKey" defaultValue={apiKey} placeholder="IFM-..." />
+                  <div className="hint">Stored locally in your browser only. Never sent anywhere else.</div>
+                </div>
+                <div className="form-group">
+                  <label>Canvas LMS URL</label>
+                  <input type="url" name="canvasUrl" defaultValue={canvasUrl} placeholder="https://yourschool.instructure.com" />
+                  <div className="hint">Your school's Canvas URL</div>
+                </div>
+                <div className="form-group">
+                  <label>Canvas API Token</label>
+                  <input type="password" name="canvasToken" defaultValue={canvasToken} placeholder="Canvas access token" />
+                  <div className="hint">Canvas: Account &gt; Settings &gt; Approved Integrations &gt; New Access Token</div>
+                </div>
+                <div className="form-group checkbox-group">
+                  <label className="checkbox-label">
+                    <input type="checkbox" name="emojisEnabled" defaultChecked={emojisEnabled} />
+                    <span>Enable Emojis in AI responses</span>
+                  </label>
+                </div>
+                <div className="form-group checkbox-group">
+                  <label className="checkbox-label">
+                    <input type="checkbox" name="fullCanvasContext" defaultChecked={fullCanvasContext} />
+                    <span>Enable Full Canvas Context (AI knows all assignments)</span>
+                  </label>
+                </div>
+                <div className="form-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setShowSettings(false)}>Cancel</button>
+                  <button type="submit" className="btn-primary">Save</button>
+                </div>
+              </form>
             </div>
-            <form className="modal-body" onSubmit={handleSaveSettings}>
-              <div className="form-group">
-                <label>MBZUAI API Key</label>
-                <input type="password" name="apiKey" defaultValue={apiKey} placeholder="IFM-..." />
-                <div className="hint">Stored locally in your browser only. Never sent anywhere else.</div>
-              </div>
-              <div className="form-group">
-                <label>Canvas LMS URL</label>
-                <input type="url" name="canvasUrl" defaultValue={canvasUrl} placeholder="https://yourschool.instructure.com" />
-                <div className="hint">Your school's Canvas URL</div>
-              </div>
-              <div className="form-group">
-                <label>Canvas API Token</label>
-                <input type="password" name="canvasToken" defaultValue={canvasToken} placeholder="Canvas access token" />
-                <div className="hint">Canvas: Account &gt; Settings &gt; Approved Integrations &gt; New Access Token</div>
-              </div>
-              <div className="form-group checkbox-group">
-                <label className="checkbox-label">
-                  <input type="checkbox" name="emojisEnabled" defaultChecked={emojisEnabled} />
-                  <span>Enable Emojis in AI responses</span>
-                </label>
-              </div>
-              <div className="form-actions">
-                <button type="button" className="btn-secondary" onClick={() => setShowSettings(false)}>Cancel</button>
-                <button type="submit" className="btn-primary">Save</button>
-              </div>
-            </form>
           </div>
-        </div>
-      )}
-    </div>
+        )
+      }
+    </div >
   );
 }
