@@ -163,9 +163,12 @@ function genId() { return Date.now().toString(36) + Math.random().toString(36).s
 // ============================================================
 function stripReasoning(text) {
   if (!text) return '';
-  // Remove completed think blocks
+  // Handle K2-Think format where opening tag is missing but closing tag exists
+  if (text.toLowerCase().includes('</think>') && !text.toLowerCase().includes('<think>')) {
+    return text.split(/<\/think>/i)[1]?.trim() || '';
+  }
+  // Standard format or unclosed opening tag
   let s = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
-  // Remove partial think blocks (at end of text)
   s = s.replace(/<think>[\s\S]*$/gi, '');
   return s.trim();
 }
