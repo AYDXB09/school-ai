@@ -229,6 +229,7 @@ export default function App() {
   const [voiceModeText, setVoiceModeText] = useState('SPEAK TO BEGIN');
   const [voiceMuted, setVoiceMuted] = useState(false);
   const voiceTimeoutRef = useRef(null);
+  const voiceModeActiveRef = useRef(false); // ref so TTS callbacks can read current state
 
   // Refs
   const chatEndRef = useRef(null);
@@ -482,36 +483,70 @@ export default function App() {
       return;
     }
     window.speechSynthesis.cancel();
-    const text = stripMarkdown(msg.content);
-    if (!text) return;
-    const utt = new SpeechSynthesisUtterance(text);
-    utt.rate = 1.0;
-    utt.pitch = 1.0;
+    const fullText = stripMarkdown(msg.content);
+    if (!fullText) {
+      if (isVoiceModeFlow) startVoiceModeSTT();
+      return;
+    }
+
+    // Split into sentences for one-at-a-time display
+    const sentences = fullText.match(/[^.!?]+[.!?]+/g) || [fullText];
+    let sentenceIndex = 0;
 
     // Prefer higher quality voices
-    const voices = window.speechSynthesis.getVoices();
-    let preferred = voices.find(v => v.name.includes('Online (Natural)') && v.lang.startsWith('en'));
-    if (!preferred) preferred = voices.find(v => (v.name.includes('Google') || v.name.includes('Premium')) && v.lang.startsWith('en'));
-    if (!preferred) preferred = voices.find(v => v.lang.startsWith('en') && v.localService);
-    if (!preferred) preferred = voices.find(v => v.lang.startsWith('en'));
+    const getVoice = () => {
+      const voices = window.speechSynthesis.getVoices();
+      let v = voices.find(v => v.name.includes('Online (Natural)') && v.lang.startsWith('en'));
+      if (!v) v = voices.find(v => (v.name.includes('Google') || v.name.includes('Premium')) && v.lang.startsWith('en'));
+      if (!v) v = voices.find(v => v.lang.startsWith('en') && v.localService);
+      if (!v) v = voices.find(v => v.lang.startsWith('en'));
+      return v;
+    };
 
-    if (preferred) utt.voice = preferred;
-
-    utt.onend = () => {
-      setIsSpeaking(false);
-      setSpeakingMsgId(null);
-      // Auto-restart listening in Voice Mode
-      if (showVoiceMode && !voiceMuted) {
-        startVoiceModeSTT();
+    const speakNext = () => {
+      if (sentenceIndex >= sentences.length) {
+        setIsSpeaking(false);
+        setSpeakingMsgId(null);
+        setVoiceModeText('');
+        if (voiceModeActiveRef.current && !voiceMuted) startVoiceModeSTT();
+        return;
       }
+      const sentence = sentences[sentenceIndex++].trim();
+      if (!sentence) { speakNext(); return; }
+
+      setVoiceModeText(sentence);
+      const utt = new SpeechSynthesisUtterance(sentence);
+      utt.rate = 1.05;
+      utt.pitch = 1.0;
+      const voice = getVoice();
+      if (voice) utt.voice = voice;
+      utt.onend = () => speakNext();
+      utt.onerror = () => {
+        setIsSpeaking(false);
+        setSpeakingMsgId(null);
+        if (voiceModeActiveRef.current && !voiceMuted) startVoiceModeSTT();
+      };
+      window.speechSynthesis.speak(utt);
     };
-    utt.onerror = () => {
-      setIsSpeaking(false);
-      setSpeakingMsgId(null);
-    };
+
     setIsSpeaking(true);
     setSpeakingMsgId(msg.id);
-    window.speechSynthesis.speak(utt);
+    // voices may not be ready yet
+    if (window.speechSynthesis.getVoices().length === 0) {
+      window.speechSynthesis.onvoiceschanged = () => { window.speechSynthesis.onvoiceschanged = null; speakNext(); };
+    } else {
+      speakNext();
+    }
+  }
+
+  function interruptVoice() {
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      setSpeakingMsgId(null);
+      setVoiceModeText('');
+      startVoiceModeSTT();
+    }
   }
 
   // ---- VOICE MODE SPECIFIC STT ----
@@ -563,6 +598,7 @@ export default function App() {
   function toggleVoiceMode() {
     if (showVoiceMode) {
       // Turn off
+      voiceModeActiveRef.current = false;
       if (recognitionRef.current) recognitionRef.current.stop();
       if (voiceTimeoutRef.current) clearTimeout(voiceTimeoutRef.current);
       window.speechSynthesis.cancel();
@@ -571,6 +607,7 @@ export default function App() {
       setIsSpeaking(false);
     } else {
       // Turn on
+      voiceModeActiveRef.current = true;
       setShowVoiceMode(true);
       setVoiceModeText('SPEAK TO BEGIN');
 
@@ -863,26 +900,24 @@ export default function App() {
           </button>
 
           <div className="voice-center-container">
-            <div className={`voice-circle-animation ${isSpeaking ? 'speaking' : isRecording ? 'listening' : ''}`}></div>
-            <div className="voice-conversation-container">
-              {messages.slice(-2).map((m, idx) => {
-                const content = stripReasoning(m.content);
-                if (!content && m.role === 'assistant') return null;
-                return (
-                  <div key={m.id || idx} className={`voice-message-bubble ${m.role}`}>
-                    {content}
-                  </div>
-                );
-              })}
-              {isStreaming && messages[messages.length - 1]?.role === 'assistant' && !stripReasoning(messages[messages.length - 1].content) && (
-                <div className="voice-text thinking">
-                  Thinking...
-                </div>
+            <div
+              className={`voice-circle-animation ${isSpeaking ? 'speaking' : isRecording ? 'listening' : ''}`}
+              onClick={interruptVoice}
+              style={{ cursor: isSpeaking ? 'pointer' : 'default' }}
+              title={isSpeaking ? 'Tap to interrupt' : ''}
+            ></div>
+            <div className="voice-text-display">
+              {isSpeaking && voiceModeText && (
+                <p className="voice-sentence speaking">{voiceModeText}</p>
               )}
-              {!isStreaming && !isSpeaking && isRecording && (
-                <div className="voice-text listening">
-                  {voiceModeText}
-                </div>
+              {isRecording && !isSpeaking && voiceModeText && voiceModeText !== 'SPEAK TO BEGIN' && (
+                <p className="voice-sentence listening">{voiceModeText}</p>
+              )}
+              {!isSpeaking && !isRecording && (
+                <p className="voice-sentence idle">Tap the circle to speak</p>
+              )}
+              {isSpeaking && (
+                <p className="voice-interrupt-hint">Tap circle to interrupt</p>
               )}
             </div>
           </div>
