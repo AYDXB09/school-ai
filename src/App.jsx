@@ -163,13 +163,29 @@ function genId() { return Date.now().toString(36) + Math.random().toString(36).s
 // ============================================================
 function stripReasoning(text) {
   if (!text) return '';
-  // Handle K2-Think format where opening tag is missing but closing tag exists
-  if (text.toLowerCase().includes('</think>') && !text.toLowerCase().includes('<think>')) {
-    return text.split(/<\/think>/i)[1]?.trim() || '';
+
+  let s = text;
+
+  // Case 1: Complete <think>...</think> blocks
+  s = s.replace(/<think>[\s\S]*?<\/think>/gi, '');
+
+  // Case 2: K2-style where opening tag is missing: "...thinking...</think>actual response"
+  // If we see a closing tag but no opening tag before it, everything before it is reasoning.
+  if (s.toLowerCase().includes('</think>')) {
+    const parts = s.split(/<\/think>/i);
+    // Take everything AFTER the last closing tag
+    s = parts[parts.length - 1];
   }
-  // Standard format or unclosed opening tag
-  let s = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+
+  // Case 3: Still inside an unclosed <think> tag (at the very end)
   s = s.replace(/<think>[\s\S]*$/gi, '');
+
+  // Case 4: Special case for models that start with raw reasoning and haven't hit a tag yet.
+  // Note: We can't safely assume everything is thinking unless we have a clear differentiator,
+  // but for models like K2-Think, if it starts with "We need to..." or similar meta-talk
+  // and hasn't shown a tag yet, it's usually thinking.
+  // However, the cleanest way is to ensure the model eventually outputs tags or markers.
+
   return s.trim();
 }
 
@@ -416,6 +432,7 @@ export default function App() {
           });
           if (voiceModeActiveRef.current) {
             const stripped = stripReasoning(cur);
+            // If the ONLY thing we have is reasoning, keep showing "Thinking..."
             setVoiceModeText(stripped || 'Thinking...');
           }
         },
