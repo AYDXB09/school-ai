@@ -1,0 +1,9 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+canvasapi==3.3.0
+requests==2.32.3
+chromadb==0.5.23
+sentence-transformers==3.4.1
+httpx==0.28.1
+python-dotenv==1.0.1
+sse-starlette==2.2.1

@@ -265,6 +265,7 @@ export default function App() {
   const [emojisEnabled, setEmojisEnabled] = useState(() => loadStorage('sai-emojis', false));
   const [fullCanvasContext, setFullCanvasContext] = useState(() => loadStorage('sai-full-canvas', false));
   const [hiddenCourses, setHiddenCourses] = useState(() => loadStorage('sai-hidden-courses', []));
+  const [backendUrl, setBackendUrl] = useState(() => loadStorage('sai-backend-url', ''));
 
   // Voice Mode
   const [showVoiceMode, setShowVoiceMode] = useState(false);
@@ -293,6 +294,7 @@ export default function App() {
   useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
   useEffect(() => { saveStorage('sai-canvas-updated', canvasLastUpdated); }, [canvasLastUpdated]);
   useEffect(() => { saveStorage('sai-hidden-courses', hiddenCourses); }, [hiddenCourses]);
+  useEffect(() => { saveStorage('sai-backend-url', backendUrl); }, [backendUrl]);
 
   // Auto-scroll
   useEffect(() => {
@@ -515,7 +517,8 @@ Data follows:\n${canvasSummary}`;
           });
           setIsStreaming(false);
           if (voiceModeActiveRef.current) setVoiceModeText('Error. Tap circle to retry.');
-        }
+        },
+        { backendUrl, canvasUrl, canvasToken }
       );
     } catch (e) {
       setIsStreaming(false);
@@ -790,6 +793,7 @@ Data follows:\n${canvasSummary}`;
     setCanvasToken(fd.get('canvasToken'));
     setEmojisEnabled(fd.get('emojisEnabled') === 'on');
     setFullCanvasContext(fd.get('fullCanvasContext') === 'on');
+    setBackendUrl(fd.get('backendUrl') || '');
     setShowSettings(false);
   }
 
@@ -1234,6 +1238,11 @@ The AI will use this as context when answering your questions."
                     <input type="checkbox" name="fullCanvasContext" defaultChecked={fullCanvasContext} />
                     <span>Enable Full Canvas Context (AI knows all assignments)</span>
                   </label>
+                </div>
+                <div className="form-group">
+                  <label>Backend URL (RAG Mode)</label>
+                  <input type="url" name="backendUrl" defaultValue={backendUrl} placeholder="http://localhost:8000" />
+                  <div className="hint">Optional. When set, chat routes through the Python backend for RAG + function calling. Leave empty for direct mode.</div>
                 </div>
                 <div className="form-actions">
                   <button type="button" className="btn-secondary" onClick={() => setShowSettings(false)}>Cancel</button>
