@@ -189,6 +189,27 @@ function stripReasoning(text) {
   return s.trim();
 }
 
+const CORS_PROXY = 'https://corsproxy.io/?';
+const GOOGLE_DOC_READER = 'https://r.jina.ai/';
+
+function extractGoogleDocIds(text) {
+  if (!text) return [];
+  const regex = /https?:\/\/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]{25,})/g;
+  const matches = [...text.matchAll(regex)];
+  return [...new Set(matches.map(m => m[1]))];
+}
+
+async function fetchGoogleDocText(docId) {
+  try {
+    const url = `${GOOGLE_DOC_READER}https://docs.google.com/document/d/${docId}/export?format=txt`;
+    const response = await fetch(url);
+    if (!response.ok) return `[Could not fetch Google Doc ${docId}: HTTP ${response.status}]`;
+    return await response.text();
+  } catch (err) {
+    return `[System Error loading Google Doc ${docId}: ${err.message}]`;
+  }
+}
+
 function stripMarkdown(text) {
   let s = stripReasoning(text);
   return s
@@ -243,6 +264,7 @@ export default function App() {
   const [webSearchEnabled, setWebSearchEnabled] = useState(() => loadStorage('sai-websearch', false));
   const [emojisEnabled, setEmojisEnabled] = useState(() => loadStorage('sai-emojis', false));
   const [fullCanvasContext, setFullCanvasContext] = useState(() => loadStorage('sai-full-canvas', false));
+  const [hiddenCourses, setHiddenCourses] = useState(() => loadStorage('sai-hidden-courses', []));
 
   // Voice Mode
   const [showVoiceMode, setShowVoiceMode] = useState(false);
@@ -270,6 +292,7 @@ export default function App() {
   useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
   useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
   useEffect(() => { saveStorage('sai-canvas-updated', canvasLastUpdated); }, [canvasLastUpdated]);
+  useEffect(() => { saveStorage('sai-hidden-courses', hiddenCourses); }, [hiddenCourses]);
 
   // Auto-scroll
   useEffect(() => {
@@ -399,15 +422,43 @@ export default function App() {
     updateMessages(chatId, (prev) => [...prev, userMsg, asstMsg]);
     setIsStreaming(true);
 
+    // Google Doc Link Auto-Detection
+    const docIds = extractGoogleDocIds(finalInput);
+    console.log('[SchoolAI] Google Doc IDs detected:', docIds);
+    if (docIds.length > 0) {
+      const docs = await Promise.all(docIds.map(id => fetchGoogleDocText(id)));
+      console.log('[SchoolAI] Fetched docs:', docs.map(d => d.substring(0, 100)));
+      const docContext = docs.map(content => `\n\n--- FETCHED DOCUMENT CONTENT ---\n${content}\n----------------------------------\n`).join('');
+
+      const injection = `\n\n[Frontend Context Injection: The user provided a document link. The frontend has automatically fetched its text content for you (shown above). You MUST use this fetched content to answer the user's question. Do NOT ask them to paste it, and do NOT mention links.]`;
+
+      const gdocRegex = /https?:\/\/docs\.google\.com\/document\/d\/[a-zA-Z0-9_-]+\S*/gi;
+
+      if (typeof apiUserMsg.content === 'string') {
+        apiUserMsg.content = apiUserMsg.content.replace(gdocRegex, '[Document Attached Automatically]') + docContext + injection;
+      } else if (Array.isArray(apiUserMsg.content)) {
+        for (let part of apiUserMsg.content) {
+          if (part.type === 'text') {
+            part.text = part.text.replace(gdocRegex, '[Document Attached Automatically]');
+          }
+        }
+        apiUserMsg.content.push({ type: 'text', text: docContext + injection });
+      }
+      console.log('[SchoolAI] Final apiUserMsg.content:', typeof apiUserMsg.content === 'string' ? apiUserMsg.content.substring(0, 300) : 'multipart');
+    }
+
     let systemContent = SYSTEM_PROMPT;
     if (transcript.trim()) systemContent += `\n\n## Class Transcript / Context Provided:\n${transcript.trim()}`;
 
     // Add Full Canvas Context if enabled
     if (fullCanvasContext && canvasItems && canvasItems.length > 0) {
-      const canvasSummary = canvasItems
-        .map(item => `[${item.type}] ${item.title} (${item.course_name || 'General'}) - Due: ${item.due_at || 'No Date'}`)
-        .join('\n');
-      systemContent += `\n\n## YOUR COMPLETE CANVAS LMS CONTEXT:\nThe student has enabled full Canvas integration. You MUST use this data to answer questions about assignments, tests, schedules, and materials without asking them to select items. 
+      // Filter out hidden courses
+      const activeItems = canvasItems.filter(item => !hiddenCourses.includes(item.course_name));
+      const canvasSummary = activeItems
+        .map(item => `[${item.type}] ${item.name} (${item.course_name || 'General'}) - Due: ${item.date || 'No Date'}\nDescription: ${item.description || 'No description'}`)
+        .join('\n\n');
+      systemContent += `\n\n## YOUR COMPLETE CANVAS LMS CONTEXT:\nThe student has enabled full Canvas integration. Use this data to answer questions about assignments, tests, and materials.
+CRITICAL: Assignment descriptions are provided below. Refer to them for specific wording and requirements.
 Data follows:\n${canvasSummary}`;
     }
 
@@ -678,14 +729,43 @@ Data follows:\n${canvasSummary}`;
 
   // Derived list based on active filters
   const canvasCourses = [...new Set(canvasItems.map(i => i.course_name))].sort();
-  const filteredCanvasItems = canvasItems.filter(item => {
-    if (canvasTab !== 'all' && item.type !== canvasTab) return false;
-    if (canvasCourse !== 'all' && item.course_name !== canvasCourse) return false;
-    if (canvasSearch && !item.name.toLowerCase().includes(canvasSearch.toLowerCase())) return false;
-    if (canvasDateFrom && item.date && new Date(item.date) < new Date(canvasDateFrom)) return false;
-    if (canvasDateTo && item.date && new Date(item.date) > new Date(canvasDateTo + 'T23:59:59')) return false;
-    return true;
-  });
+  const filteredCanvasItems = canvasItems
+    .filter(item => {
+      if (hiddenCourses.includes(item.course_name)) return false;
+      if (canvasTab !== 'all' && item.type !== canvasTab) return false;
+      if (canvasCourse !== 'all' && item.course_name !== canvasCourse) return false;
+      if (canvasSearch && !item.name.toLowerCase().includes(canvasSearch.toLowerCase())) return false;
+      if (canvasDateFrom && item.date && new Date(item.date) < new Date(canvasDateFrom)) return false;
+      if (canvasDateTo && item.date && new Date(item.date) > new Date(canvasDateTo + 'T23:59:59')) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const now = new Date();
+      if (!a.date && !b.date) return 0;
+      if (!a.date) return 1;
+      if (!b.date) return -1;
+
+      const dateA = new Date(a.date);
+      const dateB = new Date(b.date);
+      const isPastA = dateA < now;
+      const isPastB = dateB < now;
+
+      // Upcoming first: closer date first (Ascending)
+      if (!isPastA && !isPastB) return dateA - dateB;
+      // Upcoming beats past
+      if (!isPastA && isPastB) return -1;
+      if (isPastA && !isPastB) return 1;
+      // Both past: more recent first (Descending)
+      return dateB - dateA;
+    });
+
+  function toggleCourseHidden(courseName) {
+    setHiddenCourses(prev =>
+      prev.includes(courseName)
+        ? prev.filter(c => c !== courseName)
+        : [...prev, courseName]
+    );
+  }
 
   function useCanvasItem(item) {
     const dateLabel = item.date ? formatDueDate(item.date) : 'No date';
@@ -1044,6 +1124,26 @@ The AI will use this as context when answering your questions."
                   {(canvasDateFrom || canvasDateTo) && (
                     <button className="canvas-clear-date" onClick={() => { setCanvasDateFrom(''); setCanvasDateTo(''); }} title="Clear dates">{Icon.close}</button>
                   )}
+                </div>
+              </div>
+            )}
+
+            {canvasItems.length > 0 && (
+              <div className="course-management">
+                <div className="course-mgmt-header">Manage Courses</div>
+                <div className="course-mgmt-list">
+                  {canvasCourses.map(course => (
+                    <div key={course} className={`course-mgmt-item ${hiddenCourses.includes(course) ? 'hidden' : ''}`}>
+                      <span className="course-mgmt-name">{course}</span>
+                      <button
+                        className="course-mgmt-toggle"
+                        onClick={() => toggleCourseHidden(course)}
+                        title={hiddenCourses.includes(course) ? 'Show course' : 'Hide course'}
+                      >
+                        {hiddenCourses.includes(course) ? Icon.plus : Icon.trash}
+                      </button>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}

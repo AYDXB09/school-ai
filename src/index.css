@@ -1115,6 +1115,82 @@ body {
   overflow-y: auto;
 }
 
+/* ===== COURSE MANAGEMENT (Canvas Hub) ===== */
+.course-management {
+  padding: 12px 20px;
+  background: rgba(0, 0, 0, 0.05);
+  border-bottom: 1px solid var(--border);
+}
+
+.course-mgmt-header {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 10px;
+  letter-spacing: 0.8px;
+}
+
+.course-mgmt-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.course-mgmt-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  transition: all var(--transition);
+  animation: fadeIn 0.2s ease;
+}
+
+.course-mgmt-item:hover {
+  border-color: var(--accent-secondary);
+  background: var(--surface-hover);
+}
+
+.course-mgmt-item.hidden {
+  opacity: 0.4;
+  background: transparent;
+  border-style: dashed;
+}
+
+.course-mgmt-name {
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+
+.course-mgmt-toggle {
+  background: none;
+  border: none;
+  padding: 2px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+}
+
+.course-mgmt-toggle:hover {
+  color: var(--accent);
+  background: rgba(108, 92, 231, 0.1);
+}
+
+.course-mgmt-item.hidden .course-mgmt-toggle {
+  color: var(--accent);
+}
+
 .side-panel .panel-body textarea {
   width: 100%;
   height: 100%;
@@ -1813,6 +1889,7 @@ body {
 .toggle-sidebar-btn.active-icon {
   color: var(--accent);
 }
+
 /* Web search active highlight */
 .toggle-sidebar-btn.active-icon {
   color: #a29bfe !important;
@@ -1883,7 +1960,10 @@ body {
   cursor: pointer;
   transition: background 0.2s ease;
 }
-.voice-close-btn:hover { background: rgba(255, 255, 255, 0.2); }
+
+.voice-close-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
 
 .voice-mute-btn {
   position: absolute;
@@ -1901,7 +1981,11 @@ body {
   cursor: pointer;
   transition: background 0.2s ease, color 0.2s ease;
 }
-.voice-mute-btn:hover { background: rgba(255, 255, 255, 0.2); }
+
+.voice-mute-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
 .voice-mute-btn.muted {
   background: rgba(231, 76, 60, 0.2);
   color: #e74c3c;
@@ -1922,7 +2006,7 @@ body {
   width: 300px;
   height: 300px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, rgba(0,0,0,0) 70%);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.05) 0%, rgba(0, 0, 0, 0) 70%);
   border: 1px dashed rgba(255, 255, 255, 0.2);
   display: flex;
   align-items: center;
@@ -1939,7 +2023,7 @@ body {
 
 .voice-circle-animation.speaking {
   border: none;
-  background: radial-gradient(circle, rgba(162, 155, 254, 0.2) 0%, rgba(0,0,0,0) 70%);
+  background: radial-gradient(circle, rgba(162, 155, 254, 0.2) 0%, rgba(0, 0, 0, 0) 70%);
   box-shadow: 0 0 60px rgba(162, 155, 254, 0.3);
   animation: pulseSpeak 1s infinite alternate ease-in-out;
 }
@@ -1956,23 +2040,46 @@ body {
   text-align: center;
   width: 80%;
   pointer-events: none;
-  text-shadow: 0 2px 10px rgba(0,0,0,0.8);
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
   line-height: 1.5;
 }
 
 @keyframes slowPulse {
-  0% { transform: scale(0.95); opacity: 0.5; }
-  100% { transform: scale(1.05); opacity: 0.8; }
+  0% {
+    transform: scale(0.95);
+    opacity: 0.5;
+  }
+
+  100% {
+    transform: scale(1.05);
+    opacity: 0.8;
+  }
 }
 
 @keyframes pulseListen {
-  0% { transform: scale(1); opacity: 0.8; }
-  100% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 60px rgba(255,255,255,0.2); }
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+
+  100% {
+    transform: scale(1.1);
+    opacity: 1;
+    box-shadow: 0 0 60px rgba(255, 255, 255, 0.2);
+  }
 }
 
 @keyframes pulseSpeak {
-  0% { transform: scale(1); opacity: 0.8; }
-  100% { transform: scale(1.15); opacity: 1; box-shadow: 0 0 80px rgba(162, 155, 254, 0.5); }
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+
+  100% {
+    transform: scale(1.15);
+    opacity: 1;
+    box-shadow: 0 0 80px rgba(162, 155, 254, 0.5);
+  }
 }
 
 /* =========================================================
@@ -2005,12 +2112,12 @@ body {
 }
 
 .voice-sentence.listening {
-  color: rgba(255,255,255,0.75);
+  color: rgba(255, 255, 255, 0.75);
   font-style: italic;
 }
 
 .voice-sentence.idle {
-  color: rgba(255,255,255,0.3);
+  color: rgba(255, 255, 255, 0.3);
   font-size: 15px;
 }
 
@@ -2024,25 +2131,33 @@ body {
 }
 
 @keyframes voiceFadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
+
 /* Voice mode thinking and idle circle states */
 .voice-circle-animation.thinking {
   animation: voicePulse 2s ease-in-out infinite;
   border-color: rgba(162, 155, 254, 0.5);
-  background: radial-gradient(circle, rgba(162, 155, 254, 0.15) 0%, rgba(0,0,0,0) 70%);
+  background: radial-gradient(circle, rgba(162, 155, 254, 0.15) 0%, rgba(0, 0, 0, 0) 70%);
 }
 
 .voice-circle-animation.idle {
   border-color: rgba(255, 255, 255, 0.15);
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.03) 0%, rgba(0,0,0,0) 70%);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.03) 0%, rgba(0, 0, 0, 0) 70%);
   transition: border-color 0.3s, background 0.3s;
 }
 
 .voice-circle-animation.idle:hover {
   border-color: rgba(162, 155, 254, 0.4);
-  background: radial-gradient(circle, rgba(162, 155, 254, 0.08) 0%, rgba(0,0,0,0) 70%);
+  background: radial-gradient(circle, rgba(162, 155, 254, 0.08) 0%, rgba(0, 0, 0, 0) 70%);
 }
 
 .voice-sentence.thinking {
