@@ -5,6 +5,7 @@ import { fetchAllCanvasData, filterCanvasHubItems, formatDueDate, isDueOverdue, 
 import { MessageRenderer } from './MessageRenderer';
 import CourseDashboard from './CourseDashboard';
 import CourseHub from './CourseHub';
+import LuminaLogo from './LuminaLogo';
 
 // ============================================================
 // SVG ICONS
@@ -128,27 +129,7 @@ const Icon = {
   )
 };
 
-// ============================================================
-// SCHOOL AI LOGO SVG
-// ============================================================
-function SchoolAILogo({ size = 32 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="logoGrad" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#6c5ce7" />
-          <stop offset="1" stopColor="#00cec9" />
-        </linearGradient>
-      </defs>
-      <rect width="40" height="40" rx="10" fill="url(#logoGrad)" />
-      {/* Book/graduation cap shape */}
-      <path d="M20 10L8 16l12 6 12-6-12-6z" fill="white" fillOpacity="0.95" />
-      <path d="M14 18.5v5.5c0 1.5 2.7 3 6 3s6-1.5 6-3v-5.5L20 21l-6-2.5z" fill="white" fillOpacity="0.7" />
-      <path d="M32 16v7" stroke="white" strokeWidth="2" strokeLinecap="round" />
-      <circle cx="32" cy="24" r="1.5" fill="white" fillOpacity="0.8" />
-    </svg>
-  );
-}
+// Logo is imported from LuminaLogo.jsx
 
 // ============================================================
 // LOCAL STORAGE HELPERS
@@ -206,7 +187,14 @@ async function fetchGoogleDocText(docId) {
     const url = `${GOOGLE_DOC_READER}https://docs.google.com/document/d/${docId}/export?format=txt`;
     const response = await fetch(url);
     if (!response.ok) return `[Could not fetch Google Doc ${docId}: HTTP ${response.status}]`;
-    return await response.text();
+    const text = await response.text();
+
+    // Antigravity: Prevent hallucination on private docs
+    if (text.includes("Sign in - Google Accounts") || text.includes("accounts.google.com") || text.includes("To continue, log in")) {
+      return `[SYSTEM ALERT: This Google Doc (${docId}) is private/restricted. You MUST tell the user: "I cannot read this document because it is private. Please either change the share settings to 'Anyone with the link can view' or download it as a PDF/TXT and upload it here."]`;
+    }
+
+    return text;
   } catch (err) {
     return `[System Error loading Google Doc ${docId}: ${err.message}]`;
   }
@@ -239,7 +227,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showTranscript, setShowTranscript] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [showCanvas, setShowCanvas] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -254,16 +242,22 @@ export default function App() {
   const [canvasToken, setCanvasToken] = useState(() => loadStorage('sai-canvas-token', ''));
 
   // Canvas
-  const [canvasItems, setCanvasItems] = useState(() => loadStorage('sai-canvas-items', []).map(normalizeCanvasItem));
-  const [canvasLastUpdated, setCanvasLastUpdated] = useState(() => loadStorage('sai-canvas-updated', null));
   const [canvasLoading, setCanvasLoading] = useState(false);
   const [canvasError, setCanvasError] = useState('');
   const [canvasTab, setCanvasTab] = useState('all');       // all | assignment | announcement
   const [canvasSearch, setCanvasSearch] = useState('');
   const [canvasCourse, setCanvasCourse] = useState('all');
-  const [canvasDateFrom, setCanvasDateFrom] = useState('');
-  const [canvasDateTo, setCanvasDateTo] = useState('');
-  const [webSearchEnabled, setWebSearchEnabled] = useState(() => loadStorage('sai-websearch', false));
+  const [canvasItems, setCanvasItems] = useState(() => {
+    try {
+      const cached = localStorage.getItem('schoolai-canvas-cache');
+      return cached ? JSON.parse(cached) : [];
+    } catch { return []; }
+  });
+  const [canvasLastUpdated, setCanvasLastUpdated] = useState(() => {
+    try {
+      return parseInt(localStorage.getItem('schoolai-canvas-cache-time') || '0', 10);
+    } catch { return 0; }
+  });
   const [emojisEnabled, setEmojisEnabled] = useState(() => loadStorage('sai-emojis', false));
   const [fullCanvasContext, setFullCanvasContext] = useState(() => loadStorage('sai-full-canvas', false));
   const [hiddenCourses, setHiddenCourses] = useState(() => loadStorage('sai-hidden-courses', []));
@@ -294,7 +288,6 @@ export default function App() {
   useEffect(() => { saveStorage('sai-apikey', apiKey); }, [apiKey]);
   useEffect(() => { saveStorage('sai-canvas-url', canvasUrl); }, [canvasUrl]);
   useEffect(() => { saveStorage('sai-canvas-token', canvasToken); }, [canvasToken]);
-  useEffect(() => { saveStorage('sai-websearch', webSearchEnabled); }, [webSearchEnabled]);
   useEffect(() => { saveStorage('sai-emojis', emojisEnabled); }, [emojisEnabled]);
   useEffect(() => { saveStorage('sai-full-canvas', fullCanvasContext); }, [fullCanvasContext]);
   useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
@@ -525,8 +518,6 @@ Data follows:\n${canvasSummary}`;
     }
 
     // Add strict style instructions
-    if (webSearchEnabled) systemContent += `\n\n[Web Search is enabled. If knowledge may be outdated, note it and advise the student to verify online.]`;
-
     if (emojisEnabled) {
       systemContent += `\n\n[STYLE RULE: You MAY use emojis in your responses to be engaging.]`;
     } else {
@@ -808,6 +799,8 @@ Data follows:\n${canvasSummary}`;
       });
       setCanvasItems(normalizedItems);
       setCanvasLastUpdated(Date.now());
+      localStorage.setItem('schoolai-canvas-cache', JSON.stringify(normalizedItems));
+      localStorage.setItem('schoolai-canvas-cache-time', Date.now().toString());
       return normalizedItems;
     }
     catch (e) {
@@ -822,15 +815,12 @@ Data follows:\n${canvasSummary}`;
   const visibleCanvasCourses = canvasCourses.filter(course => !hiddenCourses.includes(course));
   const hasActiveCanvasFilters = canvasTab !== 'all'
     || canvasCourse !== 'all'
-    || canvasSearch.trim().length > 0
-    || Boolean(canvasDateFrom || canvasDateTo);
+    || canvasSearch.trim().length > 0;
   const filteredCanvasItems = filterCanvasHubItems(canvasItems, {
     hiddenCourses,
     tab: canvasTab,
     course: canvasCourse,
     search: canvasSearch,
-    dateFrom: canvasDateFrom,
-    dateTo: canvasDateTo,
   });
 
   function toggleCourseHidden(courseName) {
@@ -849,8 +839,28 @@ Data follows:\n${canvasSummary}`;
         courseMap.set(item.course_id, { id: item.course_id, name: item.course_name });
       }
     });
+
+    // Determine current academic year automatically
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth(); // 0-11
+    // If it's before July, we are in the later half of the academic year starting last year
+    const startYear = currentMonth < 6 ? currentYear - 1 : currentYear;
+    const endYear = startYear + 1;
+    const shortStart = startYear.toString().slice(-2);
+    const shortEnd = endYear.toString().slice(-2);
+
+    // E.g., for March 2026, startYear=2025, endYear=2026.
+    // Acceptable matches: "2025-2026", "2025-26", "25-26", "25/26", or exactly the end year like "2026" (graduating class), or "Class of 2026"
+    const yearRegex = new RegExp(`(${startYear}-?${endYear}|${startYear}-?${shortEnd}|${shortStart}-?${shortEnd}|${startYear}\\/${shortEnd}|\\b${endYear}\\b|Class of ${endYear})`, 'i');
+
     return [...courseMap.values()]
       .filter(c => !hiddenCourses.includes(c.name))
+      // Filter for current academic year OR courses that don't specify a year at all (to be safe)
+      .filter(c => {
+        const hasAnyYear = /\b20\d{2}\b|\b\d{2}-\d{2}\b/.test(c.name);
+        return !hasAnyYear || yearRegex.test(c.name);
+      })
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [canvasItems, hiddenCourses]);
 
@@ -911,41 +921,47 @@ Data follows:\n${canvasSummary}`;
       <aside className={`sidebar ${sidebarOpen ? '' : 'collapsed'}`}>
         <div className="sidebar-header">
           <div className="sidebar-logo">
-            <SchoolAILogo size={30} />
-            <span>School AI</span>
+            <LuminaLogo size={28} />
+            <span>Lumina</span>
           </div>
         </div>
 
-        <button className="new-chat-btn" onClick={createNewChat}>
-          {Icon.plus}
-          New Chat
-        </button>
+        <div className="sidebar-nav">
+          <button className="nav-item active-pill" onClick={createNewChat}>
+            {Icon.chat} AI Chat Assistant
+          </button>
 
-        <div className="chat-list">
-          {chats.map(chat => (
-            <div key={chat.id} className={`chat-item ${chat.id === activeChatId ? 'active' : ''}`} onClick={() => setActiveChatId(chat.id)}>
-              <span className="chat-icon">{chat.isVoice ? Icon.voiceMode : Icon.chat}</span>
-              <span className="chat-title">{chat.title}</span>
-              <button className="delete-btn" onClick={e => deleteChat(chat.id, e)}>{Icon.trash}</button>
-            </div>
-          ))}
-        </div>
+          <div className="nav-section">
+            <button className="nav-item" onClick={() => { setActiveCourse(null); if (canvasUrl && canvasToken) loadCanvas(); }}>
+              {Icon.layers} My Courses
+            </button>
+            <button className="nav-item" onClick={() => { setShowCanvas(!showCanvas); if (!showCanvas && canvasUrl && canvasToken) loadCanvas(); }}>
+              {Icon.book} Canvas Assignments
+            </button>
+            <button className="nav-item" onClick={() => setShowTranscript(!showTranscript)}>
+              {Icon.clipboard} Class Transcripts
+            </button>
+          </div>
 
-        <div className="sidebar-bottom">
-          <button className="sidebar-bottom-btn course-hub-btn" onClick={() => { setActiveCourse(null); setActiveChatId(null); if (canvasUrl && canvasToken) loadCanvas(); }}>
-            <span className="btn-icon">{Icon.layers}</span> My Courses
-            {derivedCourses.length > 0 && <span className="course-count-badge">{derivedCourses.length}</span>}
-          </button>
-          <button className="sidebar-bottom-btn" onClick={() => setShowTranscript(!showTranscript)}>
-            <span className="btn-icon">{Icon.clipboard}</span> Class Transcript
-            {transcript.trim() && <span className="active-dot" />}
-          </button>
-          <button className="sidebar-bottom-btn" onClick={() => { setShowCanvas(!showCanvas); if (!showCanvas && canvasUrl && canvasToken) loadCanvas(); }}>
-            <span className="btn-icon">{Icon.book}</span> Canvas Assignments
-          </button>
-          <button className="sidebar-bottom-btn" onClick={() => setShowSettings(true)}>
-            <span className="btn-icon">{Icon.settings}</span> Settings
-          </button>
+          <div className="sidebar-chat-list">
+            {chats.map(chat => (
+              <div key={chat.id} className={`sidebar-chat-item ${chat.id === activeChatId ? 'active' : ''}`} onClick={() => setActiveChatId(chat.id)}>
+                <span className="chat-title">{chat.title}</span>
+                <button className="delete-btn" onClick={e => deleteChat(chat.id, e)}>{Icon.trash}</button>
+              </div>
+            ))}
+          </div>
+
+          <div className="nav-section spacer"></div>
+
+          <div className="nav-section">
+            <button className="nav-item" onClick={() => setShowSettings(true)}>
+              {Icon.settings} Settings
+            </button>
+            <button className="nav-item" onClick={() => setShowHelp(true)}>
+              {Icon.question} Help
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -979,35 +995,26 @@ Data follows:\n${canvasSummary}`;
             onUpdateTopics={setTopics}
             onUpdateChats={setCourseChats}
             courseChats={activeCourseChats}
-            SchoolAILogo={SchoolAILogo}
+            LuminaLogo={LuminaLogo}
             hiddenCourses={hiddenCourses}
           />
         ) : (
           <div className="chat-area" ref={chatAreaRef}>
             {!activeChatId || messages.length === 0 ? (
               <div className="welcome-screen">
-                <SchoolAILogo size={64} />
+                <LuminaLogo size={64} />
                 <h1 className="welcome-title">School AI</h1>
                 <p className="welcome-subtitle">
                   Your intelligent study companion. Ask a question, load your assignments, or share your class notes to get started.
                 </p>
                 <div className="welcome-cards">
                   {[
-                    { key: 'courses', icon: Icon.layers, title: 'My Courses', desc: 'Enter your personalized course hubs with AI teacher emulation' },
                     { key: 'ask', icon: Icon.question, title: 'Ask a Question', desc: 'Get guided through any subject with targeted hints' },
                     { key: 'canvas', icon: Icon.layers, title: 'Canvas Assignments', desc: 'Pull your assignments from Canvas LMS and get help' },
                     { key: 'transcript', icon: Icon.fileText, title: 'Class Transcript', desc: 'Paste or record your lesson notes for context' },
                     { key: 'settings', icon: Icon.gear, title: 'Configure', desc: 'Set up your API keys and Canvas integration' },
                   ].map(card => (
-                    <div key={card.key} className="welcome-card" onClick={() => {
-                      if (card.key === 'courses') {
-                        if (canvasUrl && canvasToken) loadCanvas();
-                        // Scroll to inline course section
-                        document.querySelector('.inline-course-dashboard')?.scrollIntoView({ behavior: 'smooth' });
-                      } else {
-                        welcomeAction(card.key);
-                      }
-                    }}>
+                    <div key={card.key} className="welcome-card" onClick={() => welcomeAction(card.key)}>
                       <div className="card-icon">{card.icon}</div>
                       <div className="card-title">{card.title}</div>
                       <div className="card-desc">{card.desc}</div>
@@ -1032,7 +1039,7 @@ Data follows:\n${canvasSummary}`;
                       ))}
                     </div>
                     {derivedCourses.length > 6 && (
-                      <button className="btn-secondary" onClick={() => { if (canvasUrl && canvasToken) loadCanvas(); setActiveCourse(null); }}>View All Courses</button>
+                      <button className="btn-secondary" onClick={() => { setActiveCourse(null); if (canvasUrl && canvasToken) loadCanvas(); setShowCanvas(true); }}>View All Courses</button>
                     )}
                   </div>
                 )}
@@ -1045,7 +1052,7 @@ Data follows:\n${canvasSummary}`;
                       {msg.role === 'user' ? (
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
                       ) : (
-                        <SchoolAILogo size={22} />
+                        <LuminaLogo size={22} />
                       )}
                     </div>
                     <div className="message-content">
@@ -1118,17 +1125,6 @@ Data follows:\n${canvasSummary}`;
                     disabled={isStreaming}
                   >
                     {Icon.paperclip}
-                  </button>
-                  <button
-                    className={`input-action-btn ${webSearchEnabled ? 'active-icon' : ''}`}
-                    onClick={() => setWebSearchEnabled(p => !p)}
-                    title={webSearchEnabled ? 'Web search ON' : 'Web search OFF'}
-                    disabled={isStreaming}
-                  >
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                      <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
-                    </svg>
                   </button>
                 </div>
                 <textarea
@@ -1401,6 +1397,34 @@ The AI will use this as context when answering your questions."
           </div>
         )
       }
+      {/* ---- HELP MODAL ---- */}
+      {showHelp && (
+        <div className="modal-overlay" onClick={() => setShowHelp(false)}>
+          <div className="modal help-modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Help & Usage Guide</h2>
+              <button className="modal-close" onClick={() => setShowHelp(false)}>{Icon.close}</button>
+            </div>
+            <div className="modal-body" style={{ overflowY: 'auto', maxHeight: '60vh', lineHeight: '1.6' }}>
+              <h3>Welcome to Lumina</h3>
+              <p>Lumina is your intelligent study companion designed to seamlessly integrate with your coursework.</p>
+
+              <h4 style={{ marginTop: '16px' }}>Canvas Assignments</h4>
+              <p>Connect your Canvas LMS account in Settings to automatically sync your assignments. Lumina can read assignment descriptions and guide you through them.</p>
+
+              <h4 style={{ marginTop: '16px' }}>Class Transcripts</h4>
+              <p>Whenever you paste or speak your class transcript into the Class Transcripts panel, Lumina uses that specific context to emulate your teacher and explain concepts accurately grounded in what was covered.</p>
+
+              <h4 style={{ marginTop: '16px' }}>Course Hubs</h4>
+              <p>Click "My Courses" to enter a dedicated zone for a specific class. Any chats inside a Course Hub are tailored to that course's syllabus and recent assignments.</p>
+
+              <h4 style={{ marginTop: '16px' }}>Document Context</h4>
+              <p>You can paste Google Doc links directly into the chat. Lumina will attempt to retrieve the text and use it as context for your questions.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div >
   );
 }

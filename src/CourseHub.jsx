@@ -196,46 +196,53 @@ Always connect your answers back to what was covered in the class transcripts wh
         const text = (forcedInput ?? input).trim();
         if ((!text && attachments.length === 0) || isStreaming) return;
 
-        let chatId = activeChatId;
-        let currentChats = courseChats;
+        let targetChatId = activeChatId;
 
-        if (!chatId) {
+        // If no active chat, create one immediately
+        if (!targetChatId) {
             const nc = { id: genId(), courseId: course.id, title: text.slice(0, 40) || 'New Chat', messages: [], createdAt: Date.now() };
-            currentChats = [nc, ...currentChats];
-            chatId = nc.id;
+            onUpdateChats(prev => [nc, ...prev]);
             setActiveChatId(nc.id);
-            onUpdateChats([nc, ...courseChats]);
+            targetChatId = nc.id;
         }
 
-        // Create user message
+        // Create new messages
         const userMsg = { id: genId(), role: 'user', content: text, ts: Date.now() };
         const assistantMsg = { id: genId(), role: 'assistant', content: '', ts: Date.now() };
 
-        const updatedChats = currentChats.map(c => {
-            if (c.id !== chatId) return c;
-            const updatedMessages = [...c.messages, userMsg, assistantMsg];
-            const title = c.messages.length === 0 ? (text.slice(0, 40) || 'New Chat') : c.title;
-            return { ...c, messages: updatedMessages, title };
+        // Append to the specific chat via functional update to prevent closure staleness
+        onUpdateChats(prevChats => {
+            return prevChats.map(c => {
+                if (c.id !== targetChatId) return c;
+                const updatedMessages = [...c.messages, userMsg, assistantMsg];
+                const title = c.messages.length === 0 ? (text.slice(0, 40) || 'New Chat') : c.title;
+                return { ...c, messages: updatedMessages, title };
+            });
         });
-        onUpdateChats(updatedChats);
+
         setInput('');
         setAttachments([]);
         setIsStreaming(true);
 
-        const currentMessages = updatedChats.find(c => c.id === chatId)?.messages || [];
+        // We need the current chat's history for the API call. Since state update is async,
+        // we extract it from the current hook or reconstruct it manually.
+        const currentChatObj = courseChats.find(c => c.id === targetChatId) || { messages: [] };
+        const historyForApi = [...currentChatObj.messages, userMsg]; // Add the new user msg
+
         const systemPrompt = buildCourseSystemPrompt(text);
         const apiMessages = [
             { role: 'system', content: systemPrompt },
-            ...currentMessages.slice(0, -1).map(m => ({ role: m.role, content: m.content }))
+            ...historyForApi.map(m => ({ role: m.role, content: m.content }))
         ];
 
         try {
             await streamChat(
                 apiMessages,
                 apiKey,
+                // onChunk
                 (token) => {
                     onUpdateChats(prev => prev.map(c => {
-                        if (c.id !== chatId) return c;
+                        if (c.id !== targetChatId) return c;
                         return {
                             ...c,
                             messages: c.messages.map(m =>
@@ -246,9 +253,14 @@ Always connect your answers back to what was covered in the class transcripts wh
                         };
                     }));
                 },
+                // onDone
+                () => {
+                    setIsStreaming(false);
+                },
+                // onError
                 (err) => {
                     onUpdateChats(prev => prev.map(c => {
-                        if (c.id !== chatId) return c;
+                        if (c.id !== targetChatId) return c;
                         return {
                             ...c,
                             messages: c.messages.map(m =>
@@ -260,12 +272,12 @@ Always connect your answers back to what was covered in the class transcripts wh
                     }));
                     setIsStreaming(false);
                 },
+                // options
                 {}
             );
         } catch (e) {
             setIsStreaming(false);
         }
-        setIsStreaming(false);
     }
 
     function handleKeyDown(e) {
