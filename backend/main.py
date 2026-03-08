@@ -5,6 +5,7 @@ function calling, and RAG-powered semantic search.
 """
 
 import json
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -19,48 +20,40 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS
+# --- FIX FOR "FAILED TO FETCH" ---
+# Changing config.ALLOWED_ORIGINS to ["*"] ensures your browser 
+# doesn't block the connection to localhost.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.ALLOWED_ORIGINS,
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 @app.get("/")
 async def root():
     return {"status": "ok", "service": "School AI Backend", "version": "1.0.0"}
 
-
 @app.get("/api/courses")
 async def list_courses():
     """Quick endpoint to list active courses."""
-    result = json.loads(get_active_courses())
-    return JSONResponse(content=result)
-
+    try:
+        result = json.loads(get_active_courses())
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/api/stats")
 async def stats():
     """Get RAG index statistics."""
     return JSONResponse(content=get_stats())
 
-
 @app.post("/api/chat")
 async def chat(request: Request):
     """
     SSE streaming chat endpoint.
-    Accepts JSON body with:
-        - messages: list of {role, content} dicts
-        - api_key: (optional) override K2 API key
-        - canvas_url: (optional) override Canvas URL
-        - canvas_token: (optional) override Canvas token
-
-    Streams Server-Sent Events with:
-        - type: "tool_call" (when AI calls a Canvas tool)
-        - type: "content" (streamed text chunks)
-        - [DONE] (end of stream)
+    Streams Server-Sent Events with tool calls and content chunks.
     """
     body = await request.json()
     messages = body.get("messages", [])
@@ -71,7 +64,7 @@ async def chat(request: Request):
             content={"error": "No messages provided"},
         )
 
-    # Allow per-request overrides for Canvas/K2 credentials
+    # Allow per-request overrides for Canvas/K2 credentials if provided by frontend
     if body.get("api_key"):
         config.K2_API_KEY = body["api_key"]
     if body.get("canvas_url"):
@@ -84,6 +77,7 @@ async def chat(request: Request):
             async for chunk in run_tool_loop_streaming(messages):
                 yield chunk
         except Exception as e:
+            # If the LLM (K2/OpenAI) fails, this catches it and sends the error to the chat
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             yield "data: [DONE]\n\n"
 
@@ -97,16 +91,16 @@ async def chat(request: Request):
         },
     )
 
-
 @app.post("/api/index")
 async def trigger_index(request: Request):
     """
     Trigger manual re-indexing of Canvas content into ChromaDB.
-    Fetches all assignments from all courses and indexes their descriptions.
     """
     try:
         from canvasapi import Canvas
         from rag import index_assignment
+        import re
+        from html import unescape
 
         canvas = Canvas(config.CANVAS_API_URL, config.CANVAS_API_TOKEN)
         courses = canvas.get_courses(enrollment_state="active")
@@ -114,9 +108,6 @@ async def trigger_index(request: Request):
         total_indexed = 0
         for course in courses:
             try:
-                import re
-                from html import unescape
-
                 assignments = course.get_assignments()
                 for a in assignments:
                     if a.description:
@@ -141,10 +132,7 @@ async def trigger_index(request: Request):
             content={"error": f"Indexing failed: {str(e)}"},
         )
 
-
 if __name__ == "__main__":
-    import uvicorn
-
     uvicorn.run(
         "main:app",
         host=config.HOST,

@@ -131,7 +131,7 @@ async function streamChatBackend(messages, apiKey, onChunk, onDone, onError, bac
                         onChunk(parsed.text);
                     } else if (parsed.type === 'tool_call') {
                         // Tool call status — append a thinking indicator
-                        onChunk(`\n> 🔧 Calling **${parsed.name}**...\n`);
+                        onChunk(`\n> Calling **${parsed.name}**...\n`);
                     } else if (parsed.type === 'error') {
                         onError(parsed.message);
                         return;

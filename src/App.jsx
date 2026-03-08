@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { streamChat, buildContent } from './api';
 import { SYSTEM_PROMPT } from './systemPrompt';
-import { fetchAllCanvasData, formatDueDate, isDueOverdue } from './canvasApi';
+import { fetchAllCanvasData, filterCanvasHubItems, formatDueDate, isDueOverdue, normalizeCanvasItem, parseCanvasDate, selectCanvasContextItems, shouldRefreshCanvasContext } from './canvasApi';
 import { MessageRenderer } from './MessageRenderer';
+import CourseDashboard from './CourseDashboard';
+import CourseHub from './CourseHub';
 
 // ============================================================
 // SVG ICONS
@@ -252,11 +254,11 @@ export default function App() {
   const [canvasToken, setCanvasToken] = useState(() => loadStorage('sai-canvas-token', ''));
 
   // Canvas
-  const [canvasItems, setCanvasItems] = useState(() => loadStorage('sai-canvas-items', []));
+  const [canvasItems, setCanvasItems] = useState(() => loadStorage('sai-canvas-items', []).map(normalizeCanvasItem));
   const [canvasLastUpdated, setCanvasLastUpdated] = useState(() => loadStorage('sai-canvas-updated', null));
   const [canvasLoading, setCanvasLoading] = useState(false);
   const [canvasError, setCanvasError] = useState('');
-  const [canvasTab, setCanvasTab] = useState('all');       // all | assignment | file | page | announcement
+  const [canvasTab, setCanvasTab] = useState('all');       // all | assignment | announcement
   const [canvasSearch, setCanvasSearch] = useState('');
   const [canvasCourse, setCanvasCourse] = useState('all');
   const [canvasDateFrom, setCanvasDateFrom] = useState('');
@@ -265,7 +267,12 @@ export default function App() {
   const [emojisEnabled, setEmojisEnabled] = useState(() => loadStorage('sai-emojis', false));
   const [fullCanvasContext, setFullCanvasContext] = useState(() => loadStorage('sai-full-canvas', false));
   const [hiddenCourses, setHiddenCourses] = useState(() => loadStorage('sai-hidden-courses', []));
-  const [backendUrl, setBackendUrl] = useState(() => loadStorage('sai-backend-url', ''));
+
+  // Course Hub state
+  const [activeCourse, setActiveCourse] = useState(null);
+  const [transcripts, setTranscripts] = useState(() => loadStorage('sai-transcripts', []));
+  const [topics, setTopics] = useState(() => loadStorage('sai-topics', []));
+  const [courseChats, setCourseChats] = useState(() => loadStorage('sai-course-chats', []));
 
   // Voice Mode
   const [showVoiceMode, setShowVoiceMode] = useState(false);
@@ -291,10 +298,11 @@ export default function App() {
   useEffect(() => { saveStorage('sai-emojis', emojisEnabled); }, [emojisEnabled]);
   useEffect(() => { saveStorage('sai-full-canvas', fullCanvasContext); }, [fullCanvasContext]);
   useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
-  useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
   useEffect(() => { saveStorage('sai-canvas-updated', canvasLastUpdated); }, [canvasLastUpdated]);
   useEffect(() => { saveStorage('sai-hidden-courses', hiddenCourses); }, [hiddenCourses]);
-  useEffect(() => { saveStorage('sai-backend-url', backendUrl); }, [backendUrl]);
+  useEffect(() => { saveStorage('sai-transcripts', transcripts); }, [transcripts]);
+  useEffect(() => { saveStorage('sai-topics', topics); }, [topics]);
+  useEffect(() => { saveStorage('sai-course-chats', courseChats); }, [courseChats]);
 
   // Auto-scroll
   useEffect(() => {
@@ -380,6 +388,19 @@ export default function App() {
     if ((!finalInput && attachments.length === 0) || isStreaming) return;
     if (!apiKey) { setShowSettings(true); return; }
 
+    let canvasContextItems = canvasItems;
+    const needsCanvasRefresh = fullCanvasContext
+      && canvasUrl
+      && canvasToken
+      && shouldRefreshCanvasContext(canvasItems, canvasLastUpdated);
+
+    if (needsCanvasRefresh) {
+      const refreshedCanvasItems = await loadCanvas();
+      if (Array.isArray(refreshedCanvasItems) && refreshedCanvasItems.length > 0) {
+        canvasContextItems = refreshedCanvasItems;
+      }
+    }
+
     let currentChats = [...chats];
     let chatId = activeChatId;
     const isVoiceSession = voiceModeActiveRef.current;
@@ -453,15 +474,54 @@ export default function App() {
     if (transcript.trim()) systemContent += `\n\n## Class Transcript / Context Provided:\n${transcript.trim()}`;
 
     // Add Full Canvas Context if enabled
-    if (fullCanvasContext && canvasItems && canvasItems.length > 0) {
-      // Filter out hidden courses
-      const activeItems = canvasItems.filter(item => !hiddenCourses.includes(item.course_name));
-      const canvasSummary = activeItems
-        .map(item => `[${item.type}] ${item.name} (${item.course_name || 'General'}) - Due: ${item.date || 'No Date'}\nDescription: ${item.description || 'No description'}`)
-        .join('\n\n');
-      systemContent += `\n\n## YOUR COMPLETE CANVAS LMS CONTEXT:\nThe student has enabled full Canvas integration. Use this data to answer questions about assignments, tests, and materials.
+    if (fullCanvasContext && canvasContextItems && canvasContextItems.length > 0) {
+      // Add current date to context so AI knows what "this week" means
+      const todayDate = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      systemContent += `\n\n[System Info: Today's date is ${todayDate}]`;
+      const genericCanvasFollowUps = new Set([
+        'just tell me',
+        'tell me',
+        'just answer',
+        'answer me',
+        'what are they',
+        'which ones',
+        'continue',
+        'go on',
+      ]);
+      const recentUserInputs = currentMessages
+        .filter(message => message.role === 'user' && typeof message.content === 'string')
+        .map(message => message.content.trim())
+        .filter(Boolean);
+      const canvasFilterQuery = genericCanvasFollowUps.has(finalInput.toLowerCase()) && recentUserInputs.length > 0
+        ? `${recentUserInputs.slice(-2).join('\n')}\n${finalInput}`
+        : finalInput;
+
+      const filteredItems = selectCanvasContextItems(canvasContextItems, canvasFilterQuery, hiddenCourses, new Date());
+      console.log(`[SchoolAI] Smart Filter: Selected ${filteredItems.length} items for query: "${finalInput}"${canvasFilterQuery !== finalInput ? ' (using recent chat context)' : ''}`);
+      console.log(`[SchoolAI] Total canvasContextItems before filter: ${canvasContextItems.length}`);
+      filteredItems.forEach(item => {
+        console.log(`[SchoolAI]   -> "${item.name}" | course: ${item.course_name} | date: ${item.date} | type: ${item.type} | score: ${item.score}`);
+      });
+
+      if (filteredItems.length > 0) {
+        const descriptionLimit = filteredItems.length <= 3 ? 1200 : 400;
+        const canvasSummary = filteredItems
+          .map(item => {
+            const desc = item.description || 'No description';
+            const shortDesc = desc.length > descriptionLimit ? desc.substring(0, descriptionLimit) + '...' : desc;
+            const dueDate = parseCanvasDate(item.date);
+            const dueLabel = dueDate ? dueDate.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'No Date';
+            return `[${item.type}] ${item.name} (${item.course_name || 'General'}) - Due: ${dueLabel}\nDescription: ${shortDesc}`;
+          })
+          .join('\n\n');
+
+        systemContent += `\n\n## YOUR COMPLETE CANVAS LMS CONTEXT:\nThe student has enabled full Canvas integration. Use this data to answer questions about assignments, tests, and materials.
 CRITICAL: Assignment descriptions are provided below. Refer to them for specific wording and requirements.
+- If the user asks about a specific assignment, prioritize the best matching Canvas item below and use its description as the assignment instructions/context.
 Data follows:\n${canvasSummary}`;
+      } else {
+        systemContent += `\n\n## YOUR COMPLETE CANVAS LMS CONTEXT:\nThe student has fully connected their Canvas account, but **there are NO assignments matching their query for the current timeframe** (e.g., nothing due this week or no upcoming assignments). If they ask for assignments, kindly inform them that their Canvas account is synced, but they have no current/upcoming assignments that match right now based on the current date (${todayDate}). You DO have access to their Canvas, it's just empty for this specific request.`;
+      }
     }
 
     // Add strict style instructions
@@ -518,7 +578,7 @@ Data follows:\n${canvasSummary}`;
           setIsStreaming(false);
           if (voiceModeActiveRef.current) setVoiceModeText('Error. Tap circle to retry.');
         },
-        { backendUrl, canvasUrl, canvasToken }
+        { canvasUrl, canvasToken }
       );
     } catch (e) {
       setIsStreaming(false);
@@ -719,48 +779,59 @@ Data follows:\n${canvasSummary}`;
 
   // ---- CANVAS ----
   async function loadCanvas() {
-    if (!canvasUrl || !canvasToken) return;
+    if (!canvasUrl || !canvasToken) return null;
     setCanvasLoading(true); setCanvasError('');
     try {
       const data = await fetchAllCanvasData(canvasUrl, canvasToken);
-      setCanvasItems(data);
+      const normalizedItems = data.map(normalizeCanvasItem);
+      // Debug: log what Canvas returned
+      console.log(`[SchoolAI Canvas] Fetched ${normalizedItems.length} total items from Canvas`);
+      const withDates = normalizedItems.filter(i => i.date);
+      const assignments = normalizedItems.filter(i => i.type === 'assignment');
+      console.log(`[SchoolAI Canvas] ${assignments.length} assignments, ${withDates.length} items with dates`);
+      // Group by course
+      const byCourse = {};
+      assignments.forEach(a => {
+        const c = a.course_name || 'Unknown';
+        if (!byCourse[c]) byCourse[c] = [];
+        byCourse[c].push(a);
+      });
+      Object.entries(byCourse).forEach(([course, items]) => {
+        const withDate = items.filter(i => i.date).length;
+        console.log(`[SchoolAI Canvas]   Course: "${course}" -> ${items.length} assignments (${withDate} with dates)`);
+        // If economics, log ALL items
+        if (course.toLowerCase().includes('econ')) {
+          items.forEach(a => {
+            console.log(`[SchoolAI Canvas]     ECON: "${a.name}" | date: ${a.date} | source: ${a.source}`);
+          });
+        }
+      });
+      setCanvasItems(normalizedItems);
       setCanvasLastUpdated(Date.now());
+      return normalizedItems;
     }
-    catch (e) { setCanvasError(e.message); }
+    catch (e) {
+      setCanvasError(e.message);
+      return null;
+    }
     finally { setCanvasLoading(false); }
   }
 
   // Derived list based on active filters
-  const canvasCourses = [...new Set(canvasItems.map(i => i.course_name))].sort();
-  const filteredCanvasItems = canvasItems
-    .filter(item => {
-      if (hiddenCourses.includes(item.course_name)) return false;
-      if (canvasTab !== 'all' && item.type !== canvasTab) return false;
-      if (canvasCourse !== 'all' && item.course_name !== canvasCourse) return false;
-      if (canvasSearch && !item.name.toLowerCase().includes(canvasSearch.toLowerCase())) return false;
-      if (canvasDateFrom && item.date && new Date(item.date) < new Date(canvasDateFrom)) return false;
-      if (canvasDateTo && item.date && new Date(item.date) > new Date(canvasDateTo + 'T23:59:59')) return false;
-      return true;
-    })
-    .sort((a, b) => {
-      const now = new Date();
-      if (!a.date && !b.date) return 0;
-      if (!a.date) return 1;
-      if (!b.date) return -1;
-
-      const dateA = new Date(a.date);
-      const dateB = new Date(b.date);
-      const isPastA = dateA < now;
-      const isPastB = dateB < now;
-
-      // Upcoming first: closer date first (Ascending)
-      if (!isPastA && !isPastB) return dateA - dateB;
-      // Upcoming beats past
-      if (!isPastA && isPastB) return -1;
-      if (isPastA && !isPastB) return 1;
-      // Both past: more recent first (Descending)
-      return dateB - dateA;
-    });
+  const canvasCourses = [...new Set(canvasItems.map(i => i.course_name).filter(Boolean))].sort();
+  const visibleCanvasCourses = canvasCourses.filter(course => !hiddenCourses.includes(course));
+  const hasActiveCanvasFilters = canvasTab !== 'all'
+    || canvasCourse !== 'all'
+    || canvasSearch.trim().length > 0
+    || Boolean(canvasDateFrom || canvasDateTo);
+  const filteredCanvasItems = filterCanvasHubItems(canvasItems, {
+    hiddenCourses,
+    tab: canvasTab,
+    course: canvasCourse,
+    search: canvasSearch,
+    dateFrom: canvasDateFrom,
+    dateTo: canvasDateTo,
+  });
 
   function toggleCourseHidden(courseName) {
     setHiddenCourses(prev =>
@@ -768,6 +839,32 @@ Data follows:\n${canvasSummary}`;
         ? prev.filter(c => c !== courseName)
         : [...prev, courseName]
     );
+  }
+
+  // Derive unique course objects for the dashboard
+  const derivedCourses = useMemo(() => {
+    const courseMap = new Map();
+    canvasItems.forEach(item => {
+      if (item.course_name && item.course_id && !courseMap.has(item.course_id)) {
+        courseMap.set(item.course_id, { id: item.course_id, name: item.course_name });
+      }
+    });
+    return [...courseMap.values()]
+      .filter(c => !hiddenCourses.includes(c.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [canvasItems, hiddenCourses]);
+
+  // Filter course chats for the active course
+  const activeCourseChats = useMemo(() => {
+    if (!activeCourse) return [];
+    return courseChats.filter(c => c.courseId === activeCourse.id);
+  }, [courseChats, activeCourse]);
+
+  function handleSelectCourse(course) {
+    setActiveCourse(course);
+    if (canvasUrl && canvasToken && shouldRefreshCanvasContext(canvasItems, canvasLastUpdated)) {
+      loadCanvas();
+    }
   }
 
   function useCanvasItem(item) {
@@ -793,7 +890,6 @@ Data follows:\n${canvasSummary}`;
     setCanvasToken(fd.get('canvasToken'));
     setEmojisEnabled(fd.get('emojisEnabled') === 'on');
     setFullCanvasContext(fd.get('fullCanvasContext') === 'on');
-    setBackendUrl(fd.get('backendUrl') || '');
     setShowSettings(false);
   }
 
@@ -836,6 +932,10 @@ Data follows:\n${canvasSummary}`;
         </div>
 
         <div className="sidebar-bottom">
+          <button className="sidebar-bottom-btn course-hub-btn" onClick={() => { setActiveCourse(null); setActiveChatId(null); if (canvasUrl && canvasToken) loadCanvas(); }}>
+            <span className="btn-icon">{Icon.layers}</span> My Courses
+            {derivedCourses.length > 0 && <span className="course-count-badge">{derivedCourses.length}</span>}
+          </button>
           <button className="sidebar-bottom-btn" onClick={() => setShowTranscript(!showTranscript)}>
             <span className="btn-icon">{Icon.clipboard}</span> Class Transcript
             {transcript.trim() && <span className="active-dot" />}
@@ -866,150 +966,200 @@ Data follows:\n${canvasSummary}`;
           </div>
         </header>
 
-        {/* CHAT AREA */}
-        <div className="chat-area" ref={chatAreaRef}>
-          {!activeChatId || messages.length === 0 ? (
-            <div className="welcome-screen">
-              <SchoolAILogo size={64} />
-              <h1 className="welcome-title">School AI</h1>
-              <p className="welcome-subtitle">
-                Your intelligent study companion. Ask a question, load your assignments, or share your class notes to get started.
-              </p>
-              <div className="welcome-cards">
-                {[
-                  { key: 'ask', icon: Icon.question, title: 'Ask a Question', desc: 'Get guided through any subject with targeted hints' },
-                  { key: 'canvas', icon: Icon.layers, title: 'Canvas Assignments', desc: 'Pull your assignments from Canvas LMS and get help' },
-                  { key: 'transcript', icon: Icon.fileText, title: 'Class Transcript', desc: 'Paste or record your lesson notes for context' },
-                  { key: 'settings', icon: Icon.gear, title: 'Configure', desc: 'Set up your API keys and Canvas integration' },
-                ].map(card => (
-                  <div key={card.key} className="welcome-card" onClick={() => welcomeAction(card.key)}>
-                    <div className="card-icon">{card.icon}</div>
-                    <div className="card-title">{card.title}</div>
-                    <div className="card-desc">{card.desc}</div>
+        {/* MAIN CONTENT: CourseHub, CourseDashboard, or Chat */}
+        {activeCourse ? (
+          <CourseHub
+            course={activeCourse}
+            canvasItems={canvasItems}
+            allTranscripts={transcripts}
+            allTopics={topics}
+            apiKey={apiKey}
+            onBack={() => setActiveCourse(null)}
+            onUpdateTranscripts={setTranscripts}
+            onUpdateTopics={setTopics}
+            onUpdateChats={setCourseChats}
+            courseChats={activeCourseChats}
+            SchoolAILogo={SchoolAILogo}
+            hiddenCourses={hiddenCourses}
+          />
+        ) : (
+          <div className="chat-area" ref={chatAreaRef}>
+            {!activeChatId || messages.length === 0 ? (
+              <div className="welcome-screen">
+                <SchoolAILogo size={64} />
+                <h1 className="welcome-title">School AI</h1>
+                <p className="welcome-subtitle">
+                  Your intelligent study companion. Ask a question, load your assignments, or share your class notes to get started.
+                </p>
+                <div className="welcome-cards">
+                  {[
+                    { key: 'courses', icon: Icon.layers, title: 'My Courses', desc: 'Enter your personalized course hubs with AI teacher emulation' },
+                    { key: 'ask', icon: Icon.question, title: 'Ask a Question', desc: 'Get guided through any subject with targeted hints' },
+                    { key: 'canvas', icon: Icon.layers, title: 'Canvas Assignments', desc: 'Pull your assignments from Canvas LMS and get help' },
+                    { key: 'transcript', icon: Icon.fileText, title: 'Class Transcript', desc: 'Paste or record your lesson notes for context' },
+                    { key: 'settings', icon: Icon.gear, title: 'Configure', desc: 'Set up your API keys and Canvas integration' },
+                  ].map(card => (
+                    <div key={card.key} className="welcome-card" onClick={() => {
+                      if (card.key === 'courses') {
+                        if (canvasUrl && canvasToken) loadCanvas();
+                        // Scroll to inline course section
+                        document.querySelector('.inline-course-dashboard')?.scrollIntoView({ behavior: 'smooth' });
+                      } else {
+                        welcomeAction(card.key);
+                      }
+                    }}>
+                      <div className="card-icon">{card.icon}</div>
+                      <div className="card-title">{card.title}</div>
+                      <div className="card-desc">{card.desc}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Course Dashboard inline when courses are available */}
+                {derivedCourses.length > 0 && (
+                  <div className="inline-course-dashboard">
+                    <h2>Your Courses</h2>
+                    <div className="inline-course-grid">
+                      {derivedCourses.slice(0, 6).map((course, idx) => (
+                        <div key={course.id} className="inline-course-card" onClick={() => handleSelectCourse(course)}>
+                          <div className="inline-course-name">{course.name.replace(/\s*\d{4}-\d{2,4}\s*/g, '').replace(/\s*(SL|HL|SL\/HL)\s*/gi, '').replace(/\s*IB\s*DP\s*/gi, '').trim()}</div>
+                          <span className="inline-course-arrow">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
+                            </svg>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    {derivedCourses.length > 6 && (
+                      <button className="btn-secondary" onClick={() => { if (canvasUrl && canvasToken) loadCanvas(); setActiveCourse(null); }}>View All Courses</button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="chat-messages">
+                {messages.map((msg, i) => (
+                  <div key={msg.id || i} className={`message message-${msg.role}`}>
+                    <div className={`message-avatar ${msg.role}`}>
+                      {msg.role === 'user' ? (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+                      ) : (
+                        <SchoolAILogo size={22} />
+                      )}
+                    </div>
+                    <div className="message-content">
+                      <div className="message-role-row">
+                        <span className="message-role">{msg.role === 'user' ? 'You' : 'School AI'}</span>
+                        {msg.role === 'assistant' && msg.content && !isStreaming && (
+                          <button
+                            className={`tts-btn ${speakingMsgId === msg.id ? 'speaking' : ''}`}
+                            onClick={() => speakMessage(msg)}
+                            title={speakingMsgId === msg.id ? 'Stop speaking' : 'Read aloud'}
+                          >
+                            {speakingMsgId === msg.id ? Icon.volumeOff : Icon.volume}
+                          </button>
+                        )}
+                      </div>
+                      <MessageRenderer
+                        content={msg.content}
+                        isStreaming={isStreaming && i === messages.length - 1}
+                      />
+                    </div>
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* INPUT AREA — only show when NOT in CourseHub */}
+        {!activeCourse && (
+          <div className="input-area">
+            {transcript.trim() && (
+              <div className="transcript-pill">
+                <span>{Icon.clipboard}</span>
+                <span>Class transcript active</span>
+                <button onClick={() => setTranscript('')}>{Icon.close}</button>
+              </div>
+            )}
+            {/* File attachment preview */}
+            {attachments.length > 0 && (
+              <div className="attachment-strip">
+                {attachments.map(att => (
+                  <div key={att.id} className="attachment-chip">
+                    {att.type === 'image' ? (
+                      <img src={`data:${att.mimeType};base64,${att.base64}`} alt={att.name} className="attachment-thumb" />
+                    ) : (
+                      <span className="attachment-icon">{Icon.paperclip}</span>
+                    )}
+                    <span className="attachment-name">{att.name}</span>
+                    <button className="attachment-remove" onClick={() => removeAttachment(att.id)}>{Icon.close}</button>
                   </div>
                 ))}
               </div>
-            </div>
-          ) : (
-            <div className="chat-messages">
-              {messages.map((msg, i) => (
-                <div key={msg.id || i} className={`message message-${msg.role}`}>
-                  <div className={`message-avatar ${msg.role}`}>
-                    {msg.role === 'user' ? (
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
-                    ) : (
-                      <SchoolAILogo size={22} />
-                    )}
-                  </div>
-                  <div className="message-content">
-                    <div className="message-role-row">
-                      <span className="message-role">{msg.role === 'user' ? 'You' : 'School AI'}</span>
-                      {msg.role === 'assistant' && msg.content && !isStreaming && (
-                        <button
-                          className={`tts-btn ${speakingMsgId === msg.id ? 'speaking' : ''}`}
-                          onClick={() => speakMessage(msg)}
-                          title={speakingMsgId === msg.id ? 'Stop speaking' : 'Read aloud'}
-                        >
-                          {speakingMsgId === msg.id ? Icon.volumeOff : Icon.volume}
-                        </button>
-                      )}
-                    </div>
-                    <MessageRenderer
-                      content={msg.content}
-                      isStreaming={isStreaming && i === messages.length - 1}
-                    />
-                  </div>
+            )}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileSelect}
+              style={{ display: 'none' }}
+              multiple
+              accept="image/*,text/*,.pdf,.md,.txt,audio/*,video/*"
+            />
+            <div className="input-wrapper">
+              <div className="input-row">
+                <div className="input-actions-left">
+                  <button
+                    className="input-action-btn"
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Attach file"
+                    disabled={isStreaming}
+                  >
+                    {Icon.paperclip}
+                  </button>
+                  <button
+                    className={`input-action-btn ${webSearchEnabled ? 'active-icon' : ''}`}
+                    onClick={() => setWebSearchEnabled(p => !p)}
+                    title={webSearchEnabled ? 'Web search ON' : 'Web search OFF'}
+                    disabled={isStreaming}
+                  >
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                      <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
+                    </svg>
+                  </button>
                 </div>
-              ))}
-              <div ref={chatEndRef} />
-            </div>
-          )}
-        </div>
-
-        {/* INPUT AREA */}
-        <div className="input-area">
-          {transcript.trim() && (
-            <div className="transcript-pill">
-              <span>{Icon.clipboard}</span>
-              <span>Class transcript active</span>
-              <button onClick={() => setTranscript('')}>{Icon.close}</button>
-            </div>
-          )}
-          {/* File attachment preview */}
-          {attachments.length > 0 && (
-            <div className="attachment-strip">
-              {attachments.map(att => (
-                <div key={att.id} className="attachment-chip">
-                  {att.type === 'image' ? (
-                    <img src={`data:${att.mimeType};base64,${att.base64}`} alt={att.name} className="attachment-thumb" />
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Ask me anything... I will guide you to the answer"
+                  rows={1}
+                  disabled={isStreaming}
+                />
+                <div className="input-actions">
+                  <button className={`input-action-btn ${showVoiceMode ? 'recording' : ''}`} onClick={toggleVoiceMode} title="Voice Mode">
+                    {Icon.voiceMode}
+                  </button>
+                  <button className={`input-action-btn ${isRecording ? 'recording' : ''}`} onClick={toggleRecording} title={isRecording ? 'Stop recording' : 'Dictate text'}>
+                    {isRecording ? Icon.micOff : Icon.mic}
+                  </button>
+                  {isStreaming ? (
+                    <button className="send-btn stop" onClick={() => setIsStreaming(false)} title="Stop">{Icon.stop}</button>
                   ) : (
-                    <span className="attachment-icon">{Icon.paperclip}</span>
+                    <button className="send-btn" onClick={() => handleSend()} disabled={!input.trim() && attachments.length === 0} title="Send">{Icon.send}</button>
                   )}
-                  <span className="attachment-name">{att.name}</span>
-                  <button className="attachment-remove" onClick={() => removeAttachment(att.id)}>{Icon.close}</button>
                 </div>
-              ))}
-            </div>
-          )}
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileSelect}
-            style={{ display: 'none' }}
-            multiple
-            accept="image/*,text/*,.pdf,.md,.txt,audio/*,video/*"
-          />
-          <div className="input-wrapper">
-            <div className="input-row">
-              <div className="input-actions-left">
-                <button
-                  className="input-action-btn"
-                  onClick={() => fileInputRef.current?.click()}
-                  title="Attach file"
-                  disabled={isStreaming}
-                >
-                  {Icon.paperclip}
-                </button>
-                <button
-                  className={`input-action-btn ${webSearchEnabled ? 'active-icon' : ''}`}
-                  onClick={() => setWebSearchEnabled(p => !p)}
-                  title={webSearchEnabled ? 'Web search ON' : 'Web search OFF'}
-                  disabled={isStreaming}
-                >
-                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                    <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
-                  </svg>
-                </button>
-              </div>
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={handleInputChange}
-                onKeyDown={handleKeyDown}
-                placeholder="Ask me anything... I will guide you to the answer"
-                rows={1}
-                disabled={isStreaming}
-              />
-              <div className="input-actions">
-                <button className={`input-action-btn ${showVoiceMode ? 'recording' : ''}`} onClick={toggleVoiceMode} title="Voice Mode">
-                  {Icon.voiceMode}
-                </button>
-                <button className={`input-action-btn ${isRecording ? 'recording' : ''}`} onClick={toggleRecording} title={isRecording ? 'Stop recording' : 'Dictate text'}>
-                  {isRecording ? Icon.micOff : Icon.mic}
-                </button>
-                {isStreaming ? (
-                  <button className="send-btn stop" onClick={() => setIsStreaming(false)} title="Stop">{Icon.stop}</button>
-                ) : (
-                  <button className="send-btn" onClick={() => handleSend()} disabled={!input.trim() && attachments.length === 0} title="Send">{Icon.send}</button>
-                )}
               </div>
             </div>
+            <div className="input-footer">
+              <span>Powered by K2-Think-v2</span>
+            </div>
           </div>
-          <div className="input-footer">
-            <span>Powered by K2-Think-v2</span>
-          </div>
-        </div>
+        )}
       </main>
 
       {/* ---- VOICE MODE OVERLAY ---- */}
@@ -1101,7 +1251,7 @@ The AI will use this as context when answering your questions."
 
             {/* Tabs */}
             <div className="canvas-tabs">
-              {['all', 'assignment', 'file', 'page', 'announcement'].map(tab => (
+              {['all', 'assignment', 'announcement'].map(tab => (
                 <button key={tab} className={`canvas-tab ${canvasTab === tab ? 'active' : ''}`} onClick={() => setCanvasTab(tab)}>
                   {tab === 'all' ? 'All' : tab.charAt(0).toUpperCase() + tab.slice(1) + 's'}
                 </button>
@@ -1119,7 +1269,7 @@ The AI will use this as context when answering your questions."
                 />
                 <select className="canvas-select" value={canvasCourse} onChange={e => setCanvasCourse(e.target.value)}>
                   <option value="all">All Courses</option>
-                  {canvasCourses.map(c => <option key={c} value={c}>{c}</option>)}
+                  {visibleCanvasCourses.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
                 <div className="canvas-date-row">
                   <input type="date" className="canvas-date" value={canvasDateFrom} onChange={e => setCanvasDateFrom(e.target.value)} title="From date" />
@@ -1170,10 +1320,10 @@ The AI will use this as context when answering your questions."
                   <button className="btn-primary" onClick={loadCanvas}>Retry</button>
                 </div>
               ) : filteredCanvasItems.length === 0 ? (
-                <div className="panel-empty"><p>{canvasItems.length === 0 ? 'No data found. Click Refresh.' : 'No items match your filters.'}</p></div>
+                <div className="panel-empty"><p>{canvasItems.length === 0 ? 'No data found. Click Refresh.' : hasActiveCanvasFilters ? 'No items match your filters. Try clearing the course/date/search filters or click Refresh.' : 'No Canvas items found. Click Refresh.'}</p></div>
               ) : (
                 filteredCanvasItems.map((item, idx) => (
-                  <div key={item.id || idx} className={`assignment-card canvas-item-card ${item.type}`}>
+                  <div key={`${item.id || 'item'}-${idx}`} className={`assignment-card canvas-item-card ${item.type}`}>
                     <div className="canvas-item-type-badge">{item.type}</div>
                     <div className="assignment-name">{item.name}</div>
                     <div className="assignment-course">{item.course_name}</div>
@@ -1190,9 +1340,12 @@ The AI will use this as context when answering your questions."
                       <button className="btn-secondary canvas-ctx-btn" onClick={() => addCanvasToContext(item)} title="Add this item to AI context">
                         + Context
                       </button>
-                      {(item.html_url || item.url) && (
-                        <a className="btn-secondary canvas-ctx-btn" href={item.html_url || item.url} target="_blank" rel="noreferrer">Open ↗</a>
-                      )}
+                      <a className="btn-secondary canvas-ctx-btn" href={item.html_url || item.url} target="_blank" rel="noreferrer">
+                        Open
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: '4px' }}>
+                          <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
+                        </svg>
+                      </a>
                     </div>
                   </div>
                 ))
@@ -1238,11 +1391,6 @@ The AI will use this as context when answering your questions."
                     <input type="checkbox" name="fullCanvasContext" defaultChecked={fullCanvasContext} />
                     <span>Enable Full Canvas Context (AI knows all assignments)</span>
                   </label>
-                </div>
-                <div className="form-group">
-                  <label>Backend URL (RAG Mode)</label>
-                  <input type="url" name="backendUrl" defaultValue={backendUrl} placeholder="http://localhost:8000" />
-                  <div className="hint">Optional. When set, chat routes through the Python backend for RAG + function calling. Leave empty for direct mode.</div>
                 </div>
                 <div className="form-actions">
                   <button type="button" className="btn-secondary" onClick={() => setShowSettings(false)}>Cancel</button>
