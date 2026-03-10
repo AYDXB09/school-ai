@@ -95,40 +95,78 @@ function ThinkingBlock({ content, isStreaming }) {
     );
 }
 
-// ─── Markdown component overrides ─────────────────────────────────────────────
-const mdComponents = {
-    // Swallow the raw <think> tag if it somehow leaks through to ReactMarkdown
-    think: () => null,
-
-    table: ({ children }) => (
-        <div className="md-table-wrapper"><table>{children}</table></div>
-    ),
-    thead: ({ children }) => <thead>{children}</thead>,
-    th: ({ children }) => <th>{children}</th>,
-    td: ({ children }) => <td>{children}</td>,
-    blockquote: ({ children }) => <blockquote className="md-blockquote">{children}</blockquote>,
-    code({ inline, children }) {
-        if (inline) return <code className="md-code-inline">{children}</code>;
-        return <div className="md-code-block"><pre><code>{children}</code></pre></div>;
-    },
-    h1: ({ children }) => <h1 className="md-h1">{children}</h1>,
-    h2: ({ children }) => <h2 className="md-h2">{children}</h2>,
-    h3: ({ children }) => <h3 className="md-h3">{children}</h3>,
-    p: ({ children }) => <p className="md-p">{children}</p>,
-    ul: ({ children }) => <ul className="md-ul">{children}</ul>,
-    ol: ({ children }) => <ol className="md-ol">{children}</ol>,
-    li: ({ children }) => <li className="md-li">{children}</li>,
-    strong: ({ children }) => <strong className="md-strong">{children}</strong>,
-    em: ({ children }) => <em className="md-em">{children}</em>,
-    hr: () => <hr className="md-hr" />,
-    a: ({ href, children }) => (
-        <a href={href} target="_blank" rel="noopener noreferrer" className="md-link">{children}</a>
-    ),
-};
-
 // ─── Main MessageRenderer ─────────────────────────────────────────────────────
-export function MessageRenderer({ content, isStreaming }) {
+export function MessageRenderer({ content, isStreaming, onStartQuiz }) {
     const { thinking, response, isStreaming: thinkStreaming } = splitThinkingFromContent(content, isStreaming);
+
+    const mdComponents = {
+        // Swallow the raw <think> tag if it somehow leaks through to ReactMarkdown
+        think: () => null,
+
+        table: ({ children }) => (
+            <div className="md-table-wrapper"><table>{children}</table></div>
+        ),
+        thead: ({ children }) => <thead>{children}</thead>,
+        th: ({ children }) => <th>{children}</th>,
+        td: ({ children }) => <td>{children}</td>,
+        blockquote: ({ children }) => <blockquote className="md-blockquote">{children}</blockquote>,
+        code({ inline, className, children }) {
+            const isJson = /language-json/.test(className || '');
+            const codeText = String(children).replace(/\n$/, '');
+
+            if (!inline && isJson) {
+                try {
+                    const parsed = JSON.parse(codeText);
+                    if (parsed.type === 'quiz_trigger') {
+                        return (
+                            <div className="quiz-launcher-card">
+                                <div className="quiz-launcher-header">
+                                    <div className="quiz-icon">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="M4 19.5v-15A2.5 2.5 0 016.5 2H20v20H6.5a2.5 2.5 0 01-2.5-2.5z" />
+                                            <path d="M8 7h6" />
+                                            <path d="M8 11h8" />
+                                        </svg>
+                                    </div>
+                                    <div className="quiz-launcher-meta">
+                                        <h4>{parsed.topic || 'Interactive Quiz'}</h4>
+                                        <span>{parsed.count || 5} Questions</span>
+                                    </div>
+                                </div>
+                                <div className="quiz-launcher-body">
+                                    <p>Ready to test your knowledge?</p>
+                                    <button
+                                        className="start-quiz-btn"
+                                        onClick={() => onStartQuiz && onStartQuiz({ topic: parsed.topic, count: parsed.count })}
+                                    >
+                                        Start Quiz
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    }
+                } catch (e) {
+                    // Not valid JSON or not a quiz trigger, render as normal code block
+                }
+            }
+
+            if (inline) return <code className="md-code-inline">{children}</code>;
+            return <div className="md-code-block"><pre><code>{children}</code></pre></div>;
+        },
+        h1: ({ children }) => <h1 className="md-h1">{children}</h1>,
+        h2: ({ children }) => <h2 className="md-h2">{children}</h2>,
+        h3: ({ children }) => <h3 className="md-h3">{children}</h3>,
+        p: ({ children }) => <p className="md-p">{children}</p>,
+        ul: ({ children }) => <ul className="md-ul">{children}</ul>,
+        ol: ({ children }) => <ol className="md-ol">{children}</ol>,
+        li: ({ children }) => <li className="md-li">{children}</li>,
+        strong: ({ children }) => <strong className="md-strong">{children}</strong>,
+        em: ({ children }) => <em className="md-em">{children}</em>,
+        hr: () => <hr className="md-hr" />,
+        a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer" className="md-link">{children}</a>
+        ),
+    };
 
     if (!content && isStreaming) {
         return (

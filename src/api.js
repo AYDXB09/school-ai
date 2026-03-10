@@ -1,6 +1,7 @@
 // MBZUAI K2-Think-v2 API Service
 
 const API_URL = 'https://api.k2think.ai/v1/chat/completions';
+const PDF_EXTRACT_URL = '/api/extract-pdf';
 
 // Build content array for multimodal messages
 // attachments: [{ type: 'image', base64: '...', mimeType: 'image/png' }]
@@ -82,6 +83,42 @@ export async function streamChat(messages, apiKey, onChunk, onDone, onError, opt
         onDone();
     } catch (e) {
         if (e.name !== 'AbortError') onError(e.message);
+    }
+}
+
+export async function extractPdfText(file) {
+    try {
+        const response = await fetch(PDF_EXTRACT_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': file?.type || 'application/pdf',
+                'X-File-Name': encodeURIComponent(file?.name || 'document.pdf'),
+            },
+            body: file,
+        });
+
+        if (!response.ok) {
+            let message = `PDF extraction failed (${response.status})`;
+            try {
+                const payload = await response.json();
+                if (payload?.error) message = payload.error;
+            } catch {
+                const text = await response.text();
+                if (text) message = text;
+            }
+            throw new Error(message);
+        }
+
+        const payload = await response.json();
+        if (!payload?.text?.trim()) {
+            throw new Error('No readable text was extracted from that PDF.');
+        }
+        return payload;
+    } catch (error) {
+        if (error instanceof TypeError) {
+            throw new Error('PDF extraction requires the local Python backend to be running on localhost:8000.');
+        }
+        throw error;
     }
 }
 

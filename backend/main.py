@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from config import config
 from tool_controller import run_tool_loop_streaming
 from canvas_tools import get_active_courses
+from pdf_tools import extract_pdf_text
 from rag import get_stats
 
 app = FastAPI(
@@ -90,6 +91,19 @@ async def chat(request: Request):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/extract-pdf")
+async def extract_pdf(request: Request):
+    try:
+        file_name = request.headers.get("X-File-Name", "document.pdf")
+        file_bytes = await request.body()
+        payload = extract_pdf_text(file_bytes, file_name)
+        return JSONResponse(content=payload)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"PDF extraction failed: {str(e)}"})
 
 @app.post("/api/index")
 async def trigger_index(request: Request):

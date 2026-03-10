@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { streamChat, buildContent } from './api';
+import { streamChat, buildContent, extractPdfText } from './api';
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { fetchAllCanvasData, filterCanvasHubItems, formatDueDate, isDueOverdue, normalizeCanvasItem, parseCanvasDate, selectCanvasContextItems, shouldRefreshCanvasContext } from './canvasApi';
 import { MessageRenderer } from './MessageRenderer';
 import CourseDashboard from './CourseDashboard';
 import CourseHub from './CourseHub';
+import QuizView from './QuizView';
 import LuminaLogo from './LuminaLogo';
 
 // ============================================================
@@ -138,8 +139,73 @@ function loadStorage(key, fallback) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
   catch { return fallback; }
 }
-function saveStorage(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
+
+function slimCanvasItemsForStorage(items) {
+  if (!Array.isArray(items)) return items;
+
+  return items.map(item => {
+    if (!item || typeof item !== 'object') return item;
+    return {
+      ...item,
+      description: typeof item.description === 'string' ? item.description.slice(0, 400) : item.description,
+    };
+  });
+}
+
+function slimRichTextEntriesForStorage(entries) {
+  if (!Array.isArray(entries)) return entries;
+
+  return entries.map(entry => {
+    if (!entry || typeof entry !== 'object') return entry;
+    return {
+      ...entry,
+      text: typeof entry.text === 'string' ? entry.text.slice(0, 12000) : entry.text,
+      content: typeof entry.content === 'string' ? entry.content.slice(0, 12000) : entry.content,
+    };
+  });
+}
+
+function saveStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (error) {
+    if (key === 'sai-canvas-items') {
+      try {
+        localStorage.removeItem(key);
+        localStorage.setItem(key, JSON.stringify(slimCanvasItemsForStorage(value)));
+        console.warn('[SchoolAI] Canvas cache was trimmed to fit local storage.');
+        return true;
+      } catch (trimError) {
+        console.warn('[SchoolAI] Failed to save trimmed Canvas cache:', trimError);
+      }
+    }
+
+    if (key === 'sai-transcripts' || key === 'sai-materials') {
+      try {
+        localStorage.removeItem(key);
+        localStorage.setItem(key, JSON.stringify(slimRichTextEntriesForStorage(value)));
+        console.warn(`[SchoolAI] ${key} was trimmed to fit local storage.`);
+        return true;
+      } catch (trimError) {
+        console.warn(`[SchoolAI] Failed to save trimmed ${key}:`, trimError);
+      }
+    }
+
+    console.warn(`[SchoolAI] Failed to save ${key} to local storage:`, error);
+    return false;
+  }
+}
+
 function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+function formatCourseLabel(name = '') {
+  return name
+    .replace(/\s*\d{4}-\d{2,4}\s*/g, '')
+    .replace(/\s*(SL|HL|SL\/HL)\s*/gi, '')
+    .replace(/\s*IB\s*DP\s*/gi, '')
+    .trim();
+}
 
 // ============================================================
 // TTS / CONTENT HELPERS
@@ -187,14 +253,7 @@ async function fetchGoogleDocText(docId) {
     const url = `${GOOGLE_DOC_READER}https://docs.google.com/document/d/${docId}/export?format=txt`;
     const response = await fetch(url);
     if (!response.ok) return `[Could not fetch Google Doc ${docId}: HTTP ${response.status}]`;
-    const text = await response.text();
-
-    // Antigravity: Prevent hallucination on private docs
-    if (text.includes("Sign in - Google Accounts") || text.includes("accounts.google.com") || text.includes("To continue, log in")) {
-      return `[SYSTEM ALERT: This Google Doc (${docId}) is private/restricted. You MUST tell the user: "I cannot read this document because it is private. Please either change the share settings to 'Anyone with the link can view' or download it as a PDF/TXT and upload it here."]`;
-    }
-
-    return text;
+    return await response.text();
   } catch (err) {
     return `[System Error loading Google Doc ${docId}: ${err.message}]`;
   }
@@ -227,8 +286,9 @@ export default function App() {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
   const [showCanvas, setShowCanvas] = useState(false);
+  const [showCourseManager, setShowCourseManager] = useState(false);
+  const [activeQuiz, setActiveQuiz] = useState(null);
   const [transcript, setTranscript] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -242,22 +302,16 @@ export default function App() {
   const [canvasToken, setCanvasToken] = useState(() => loadStorage('sai-canvas-token', ''));
 
   // Canvas
+  const [canvasItems, setCanvasItems] = useState(() => loadStorage('sai-canvas-items', []).map(normalizeCanvasItem));
+  const [canvasLastUpdated, setCanvasLastUpdated] = useState(() => loadStorage('sai-canvas-updated', null));
   const [canvasLoading, setCanvasLoading] = useState(false);
   const [canvasError, setCanvasError] = useState('');
   const [canvasTab, setCanvasTab] = useState('all');       // all | assignment | announcement
   const [canvasSearch, setCanvasSearch] = useState('');
   const [canvasCourse, setCanvasCourse] = useState('all');
-  const [canvasItems, setCanvasItems] = useState(() => {
-    try {
-      const cached = localStorage.getItem('schoolai-canvas-cache');
-      return cached ? JSON.parse(cached) : [];
-    } catch { return []; }
-  });
-  const [canvasLastUpdated, setCanvasLastUpdated] = useState(() => {
-    try {
-      return parseInt(localStorage.getItem('schoolai-canvas-cache-time') || '0', 10);
-    } catch { return 0; }
-  });
+  const [canvasDateFrom, setCanvasDateFrom] = useState('');
+  const [canvasDateTo, setCanvasDateTo] = useState('');
+  const [webSearchEnabled, setWebSearchEnabled] = useState(() => loadStorage('sai-websearch', false));
   const [emojisEnabled, setEmojisEnabled] = useState(() => loadStorage('sai-emojis', false));
   const [fullCanvasContext, setFullCanvasContext] = useState(() => loadStorage('sai-full-canvas', false));
   const [hiddenCourses, setHiddenCourses] = useState(() => loadStorage('sai-hidden-courses', []));
@@ -265,13 +319,21 @@ export default function App() {
   // Course Hub state
   const [activeCourse, setActiveCourse] = useState(null);
   const [transcripts, setTranscripts] = useState(() => loadStorage('sai-transcripts', []));
+  const [materials, setMaterials] = useState(() => loadStorage('sai-materials', []));
   const [topics, setTopics] = useState(() => loadStorage('sai-topics', []));
+  const [topicAssessments, setTopicAssessments] = useState(() => loadStorage('sai-topic-assessments', {}));
   const [courseChats, setCourseChats] = useState(() => loadStorage('sai-course-chats', []));
+  const [courseDisplayOrder, setCourseDisplayOrder] = useState(() => loadStorage('sai-course-display-order', []));
+  const [homepageCourseSlots, setHomepageCourseSlots] = useState(() => loadStorage('sai-homepage-course-slots', []));
+  const [visibleCourseSlots, setVisibleCourseSlots] = useState(() => loadStorage('sai-course-visible-slots', 6));
+  const [selectedHomepageSlot, setSelectedHomepageSlot] = useState(null);
 
   // Voice Mode
   const [showVoiceMode, setShowVoiceMode] = useState(false);
   const [voiceModeText, setVoiceModeText] = useState('SPEAK TO BEGIN');
   const [voiceMuted, setVoiceMuted] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+
   const voiceTimeoutRef = useRef(null);
   const voiceModeActiveRef = useRef(false); // ref so TTS callbacks can read current state
 
@@ -288,14 +350,20 @@ export default function App() {
   useEffect(() => { saveStorage('sai-apikey', apiKey); }, [apiKey]);
   useEffect(() => { saveStorage('sai-canvas-url', canvasUrl); }, [canvasUrl]);
   useEffect(() => { saveStorage('sai-canvas-token', canvasToken); }, [canvasToken]);
+  useEffect(() => { saveStorage('sai-websearch', webSearchEnabled); }, [webSearchEnabled]);
   useEffect(() => { saveStorage('sai-emojis', emojisEnabled); }, [emojisEnabled]);
   useEffect(() => { saveStorage('sai-full-canvas', fullCanvasContext); }, [fullCanvasContext]);
   useEffect(() => { saveStorage('sai-canvas-items', canvasItems); }, [canvasItems]);
   useEffect(() => { saveStorage('sai-canvas-updated', canvasLastUpdated); }, [canvasLastUpdated]);
   useEffect(() => { saveStorage('sai-hidden-courses', hiddenCourses); }, [hiddenCourses]);
   useEffect(() => { saveStorage('sai-transcripts', transcripts); }, [transcripts]);
+  useEffect(() => { saveStorage('sai-materials', materials); }, [materials]);
   useEffect(() => { saveStorage('sai-topics', topics); }, [topics]);
+  useEffect(() => { saveStorage('sai-topic-assessments', topicAssessments); }, [topicAssessments]);
   useEffect(() => { saveStorage('sai-course-chats', courseChats); }, [courseChats]);
+  useEffect(() => { saveStorage('sai-course-display-order', courseDisplayOrder); }, [courseDisplayOrder]);
+  useEffect(() => { saveStorage('sai-homepage-course-slots', homepageCourseSlots); }, [homepageCourseSlots]);
+  useEffect(() => { saveStorage('sai-course-visible-slots', visibleCourseSlots); }, [visibleCourseSlots]);
 
   // Auto-scroll
   useEffect(() => {
@@ -313,8 +381,8 @@ export default function App() {
     setChats(p => [nc, ...p]);
     setActiveChatId(nc.id);
     setInput('');
-    setShowTranscript(false);
     setShowCanvas(false);
+    setShowCourseManager(false);
   }
 
   function deleteChat(id, e) {
@@ -346,10 +414,18 @@ export default function App() {
       if (file.type.startsWith('image/')) {
         const base64 = await fileToBase64(file);
         newAtts.push({ id, name: file.name, type: 'image', base64, mimeType: file.type });
-      } else if (file.type.startsWith('text/') || file.name.endsWith('.pdf') || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
+      } else if (file.type.startsWith('text/') || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
         const text = await file.text();
         newAtts.push({ id, name: file.name, type: 'text', content: text });
-      } else if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
+      } else if (file.name.endsWith('.pdf')) {
+        try {
+          const text = await extractPdfText(file);
+          newAtts.push({ id, name: file.name, type: 'text', content: text });
+        } catch (error) {
+          newAtts.push({ id, name: file.name, type: 'text', content: `[Could not read PDF ${file.name}: ${error.message}]` });
+        }
+      }
+      else if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
         // For video/audio: attempt speech recognition via browser, or just note the file
         newAtts.push({ id, name: file.name, type: 'text', content: `[${file.name} was attached. Audio/video transcription is not supported in the browser. Please paste a transcript manually in the Class Transcript panel.]` });
       } else {
@@ -444,18 +520,21 @@ export default function App() {
     if (docIds.length > 0) {
       const docs = await Promise.all(docIds.map(id => fetchGoogleDocText(id)));
       console.log('[SchoolAI] Fetched docs:', docs.map(d => d.substring(0, 100)));
-      const docContext = docs.map(content => `\n\n--- FETCHED DOCUMENT CONTENT ---\n${content}\n----------------------------------\n`).join('');
+      const docContext = docs.map((content, idx) => `\n\n--- FETCHED DOCUMENT CONTENT (ID: ${docIds[idx]}) ---\n${content}\n----------------------------------\n`).join('');
 
-      const injection = `\n\n[Frontend Context Injection: The user provided a document link. The frontend has automatically fetched its text content for you (shown above). You MUST use this fetched content to answer the user's question. Do NOT ask them to paste it, and do NOT mention links.]`;
+      const injection = `\n\n[CRITICAL CONTEXT INJECTION: The user shared one or more Google Doc links. The frontend has FETCHED the text content from these docs and displayed it above.
+You MUST prioritize this fetched content to answer.
+If the fetched content is empty, invalid, or looks like an error page, tell the user you couldn't access the specific doc.
+DO NOT hallucinate or make up information if the doc content is not relevant to their question.]`;
 
       const gdocRegex = /https?:\/\/docs\.google\.com\/document\/d\/[a-zA-Z0-9_-]+\S*/gi;
 
       if (typeof apiUserMsg.content === 'string') {
-        apiUserMsg.content = apiUserMsg.content.replace(gdocRegex, '[Document Attached Automatically]') + docContext + injection;
+        apiUserMsg.content = apiUserMsg.content.replace(gdocRegex, '[Document Content Injected Below]') + docContext + injection;
       } else if (Array.isArray(apiUserMsg.content)) {
         for (let part of apiUserMsg.content) {
           if (part.type === 'text') {
-            part.text = part.text.replace(gdocRegex, '[Document Attached Automatically]');
+            part.text = part.text.replace(gdocRegex, '[Document Content Injected Below]');
           }
         }
         apiUserMsg.content.push({ type: 'text', text: docContext + injection });
@@ -518,6 +597,8 @@ Data follows:\n${canvasSummary}`;
     }
 
     // Add strict style instructions
+    if (webSearchEnabled) systemContent += `\n\n[Web Search is enabled. If knowledge may be outdated, note it and advise the student to verify online.]`;
+
     if (emojisEnabled) {
       systemContent += `\n\n[STYLE RULE: You MAY use emojis in your responses to be engaging.]`;
     } else {
@@ -799,8 +880,6 @@ Data follows:\n${canvasSummary}`;
       });
       setCanvasItems(normalizedItems);
       setCanvasLastUpdated(Date.now());
-      localStorage.setItem('schoolai-canvas-cache', JSON.stringify(normalizedItems));
-      localStorage.setItem('schoolai-canvas-cache-time', Date.now().toString());
       return normalizedItems;
     }
     catch (e) {
@@ -815,12 +894,15 @@ Data follows:\n${canvasSummary}`;
   const visibleCanvasCourses = canvasCourses.filter(course => !hiddenCourses.includes(course));
   const hasActiveCanvasFilters = canvasTab !== 'all'
     || canvasCourse !== 'all'
-    || canvasSearch.trim().length > 0;
+    || canvasSearch.trim().length > 0
+    || Boolean(canvasDateFrom || canvasDateTo);
   const filteredCanvasItems = filterCanvasHubItems(canvasItems, {
     hiddenCourses,
     tab: canvasTab,
     course: canvasCourse,
     search: canvasSearch,
+    dateFrom: canvasDateFrom,
+    dateTo: canvasDateTo,
   });
 
   function toggleCourseHidden(courseName) {
@@ -850,9 +932,9 @@ Data follows:\n${canvasSummary}`;
     const shortStart = startYear.toString().slice(-2);
     const shortEnd = endYear.toString().slice(-2);
 
-    // E.g., for March 2026, startYear=2025, endYear=2026.
-    // Acceptable matches: "2025-2026", "2025-26", "25-26", "25/26", or exactly the end year like "2026" (graduating class), or "Class of 2026"
-    const yearRegex = new RegExp(`(${startYear}-?${endYear}|${startYear}-?${shortEnd}|${shortStart}-?${shortEnd}|${startYear}\\/${shortEnd}|\\b${endYear}\\b|Class of ${endYear})`, 'i');
+    // E.g., for March 2026, startYear=2025, endYear=2026. 
+    // Look for phrases like "2025-26", "25-26", "25/26", or just "2025" in names
+    const yearRegex = new RegExp(`(${startYear}-?${shortEnd}|${shortStart}-?${shortEnd}|${startYear}\\/${shortEnd}|${startYear}|${startYear}-${endYear})`, 'i');
 
     return [...courseMap.values()]
       .filter(c => !hiddenCourses.includes(c.name))
@@ -864,6 +946,99 @@ Data follows:\n${canvasSummary}`;
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [canvasItems, hiddenCourses]);
 
+  useEffect(() => {
+    const validIds = derivedCourses.map(course => String(course.id));
+
+    setCourseDisplayOrder(prev => {
+      const normalizedPrev = (prev || []).map(id => String(id));
+      const retained = normalizedPrev.filter(id => validIds.includes(id));
+      const missing = validIds.filter(id => !retained.includes(id));
+      const next = [...retained, ...missing];
+      return next.length === normalizedPrev.length && next.every((id, idx) => id === normalizedPrev[idx]) ? prev : next;
+    });
+
+    setVisibleCourseSlots(prev => {
+      const maxSlots = Math.max(6, validIds.length + 3);
+      const normalized = Number.isFinite(prev) ? prev : 6;
+      return Math.min(Math.max(normalized, 6), maxSlots);
+    });
+  }, [derivedCourses]);
+
+  const orderedCourses = useMemo(() => {
+    const courseMap = new Map(derivedCourses.map(course => [String(course.id), course]));
+    const ordered = [];
+
+    courseDisplayOrder.forEach(id => {
+      const course = courseMap.get(String(id));
+      if (course) {
+        ordered.push(course);
+        courseMap.delete(String(id));
+      }
+    });
+
+    return [...ordered, ...courseMap.values()];
+  }, [derivedCourses, courseDisplayOrder]);
+
+  const orderedCourseIds = useMemo(() => orderedCourses.map(course => String(course.id)), [orderedCourses]);
+  const maxVisibleCourseSlots = Math.max(6, orderedCourses.length + 3);
+  const clampedVisibleCourseSlots = Math.min(Math.max(visibleCourseSlots, 6), maxVisibleCourseSlots);
+
+  useEffect(() => {
+    setHomepageCourseSlots(prev => {
+      const normalizedPrev = Array.isArray(prev)
+        ? prev.map(id => (id == null ? null : String(id)))
+        : [];
+      const seen = new Set();
+      const cleaned = normalizedPrev.map(id => {
+        if (id == null || !orderedCourseIds.includes(id) || seen.has(id)) return null;
+        seen.add(id);
+        return id;
+      });
+
+      let next = cleaned.slice(0, clampedVisibleCourseSlots);
+
+      if (normalizedPrev.length === 0) {
+        next = orderedCourseIds.slice(0, clampedVisibleCourseSlots);
+      }
+
+      while (next.length < clampedVisibleCourseSlots) next.push(null);
+
+      const unchanged = next.length === normalizedPrev.length
+        && next.every((id, idx) => id === normalizedPrev[idx]);
+
+      return unchanged ? prev : next;
+    });
+
+    setSelectedHomepageSlot(prev => (prev != null && prev >= clampedVisibleCourseSlots ? null : prev));
+  }, [orderedCourseIds, clampedVisibleCourseSlots]);
+
+  const featuredSlotIds = useMemo(
+    () => Array.from({ length: clampedVisibleCourseSlots }, (_, index) => homepageCourseSlots[index] ?? null),
+    [homepageCourseSlots, clampedVisibleCourseSlots]
+  );
+
+  const featuredCourseIdSet = useMemo(
+    () => new Set(featuredSlotIds.filter(Boolean)),
+    [featuredSlotIds]
+  );
+
+  const featuredCourses = useMemo(() => {
+    const courseMap = new Map(orderedCourses.map(course => [String(course.id), course]));
+    return featuredSlotIds.map(id => (id ? courseMap.get(id) || null : null));
+  }, [orderedCourses, featuredSlotIds]);
+
+  const homepageCourses = useMemo(
+    () => featuredCourses.filter(Boolean),
+    [featuredCourses]
+  );
+
+  const availableCourses = useMemo(
+    () => orderedCourses.filter(course => !featuredCourseIdSet.has(String(course.id))),
+    [orderedCourses, featuredCourseIdSet]
+  );
+
+  const featuredCourseCount = homepageCourses.length;
+
   // Filter course chats for the active course
   const activeCourseChats = useMemo(() => {
     if (!activeCourse) return [];
@@ -872,9 +1047,52 @@ Data follows:\n${canvasSummary}`;
 
   function handleSelectCourse(course) {
     setActiveCourse(course);
+    setShowCourseManager(false);
     if (canvasUrl && canvasToken && shouldRefreshCanvasContext(canvasItems, canvasLastUpdated)) {
       loadCanvas();
     }
+  }
+
+  function toggleCourseManager() {
+    if (!showCourseManager && canvasUrl && canvasToken && derivedCourses.length === 0) {
+      loadCanvas();
+    }
+    setShowCourseManager(prev => !prev);
+  }
+
+  function changeVisibleCourseSlots(delta) {
+    setVisibleCourseSlots(prev => {
+      const next = prev + delta;
+      return Math.min(Math.max(next, 6), maxVisibleCourseSlots);
+    });
+  }
+
+  function toggleHomepageSlotSelection(slotIndex) {
+    setSelectedHomepageSlot(prev => (prev === slotIndex ? null : slotIndex));
+  }
+
+  function clearHomepageSlot(slotIndex) {
+    setHomepageCourseSlots(prev => prev.map((id, index) => (index === slotIndex ? null : id)));
+    setSelectedHomepageSlot(prev => (prev === slotIndex ? null : prev));
+  }
+
+  function assignCourseToHomepageSlot(courseId) {
+    if (selectedHomepageSlot == null) return;
+
+    const nextCourseId = String(courseId);
+    setHomepageCourseSlots(prev => {
+      const next = Array.from({ length: clampedVisibleCourseSlots }, (_, index) => prev[index] ?? null);
+      const previousSlotValue = next[selectedHomepageSlot] ?? null;
+      const existingIndex = next.findIndex((id, index) => index !== selectedHomepageSlot && id === nextCourseId);
+
+      if (existingIndex !== -1) {
+        next[existingIndex] = previousSlotValue;
+      }
+
+      next[selectedHomepageSlot] = nextCourseId;
+      return next;
+    });
+    setSelectedHomepageSlot(null);
   }
 
   function useCanvasItem(item) {
@@ -907,7 +1125,6 @@ Data follows:\n${canvasSummary}`;
   function welcomeAction(type) {
     if (type === 'ask') { createNewChat(); setTimeout(() => textareaRef.current?.focus(), 100); }
     if (type === 'canvas') { setShowCanvas(true); if (canvasUrl && canvasToken) loadCanvas(); }
-    if (type === 'transcript') setShowTranscript(true);
     if (type === 'settings') setShowSettings(true);
   }
 
@@ -922,7 +1139,6 @@ Data follows:\n${canvasSummary}`;
         <div className="sidebar-header">
           <div className="sidebar-logo">
             <LuminaLogo size={28} />
-            <span>Lumina</span>
           </div>
         </div>
 
@@ -932,27 +1148,24 @@ Data follows:\n${canvasSummary}`;
           </button>
 
           <div className="nav-section">
-            <button className="nav-item" onClick={() => { setActiveCourse(null); if (canvasUrl && canvasToken) loadCanvas(); }}>
-              {Icon.layers} My Courses
-            </button>
             <button className="nav-item" onClick={() => { setShowCanvas(!showCanvas); if (!showCanvas && canvasUrl && canvasToken) loadCanvas(); }}>
               {Icon.book} Canvas Assignments
             </button>
-            <button className="nav-item" onClick={() => setShowTranscript(!showTranscript)}>
-              {Icon.clipboard} Class Transcripts
-            </button>
-          </div>
-
-          <div className="sidebar-chat-list">
-            {chats.map(chat => (
-              <div key={chat.id} className={`sidebar-chat-item ${chat.id === activeChatId ? 'active' : ''}`} onClick={() => setActiveChatId(chat.id)}>
-                <span className="chat-title">{chat.title}</span>
-                <button className="delete-btn" onClick={e => deleteChat(chat.id, e)}>{Icon.trash}</button>
-              </div>
-            ))}
           </div>
 
           <div className="nav-section spacer"></div>
+
+          <div className="nav-section chat-history-section">
+            <button className="new-chat-btn" onClick={createNewChat}>+ New Chat</button>
+            <div className="chat-history-list">
+              {chats.map(chat => (
+                <div key={chat.id} className={`chat-history-item ${chat.id === activeChatId ? 'active' : ''}`} onClick={() => setActiveChatId(chat.id)}>
+                  <span className="chat-title">{chat.title}</span>
+                  <button className="delete-btn" onClick={e => deleteChat(chat.id, e)}>{Icon.trash}</button>
+                </div>
+              ))}
+            </div>
+          </div>
 
           <div className="nav-section">
             <button className="nav-item" onClick={() => setShowSettings(true)}>
@@ -977,7 +1190,6 @@ Data follows:\n${canvasSummary}`;
             </span>
           </div>
           <div className="topbar-right">
-            <button className="toggle-sidebar-btn" onClick={() => setShowTranscript(!showTranscript)} title="Class Transcript">{Icon.clipboard}</button>
             <button className="toggle-sidebar-btn" onClick={() => { setShowCanvas(!showCanvas); if (!showCanvas && canvasUrl && canvasToken) loadCanvas(); }} title="Canvas Hub">{Icon.book}</button>
           </div>
         </header>
@@ -988,14 +1200,18 @@ Data follows:\n${canvasSummary}`;
             course={activeCourse}
             canvasItems={canvasItems}
             allTranscripts={transcripts}
+            allMaterials={materials}
             allTopics={topics}
+            topicAssessments={topicAssessments}
             apiKey={apiKey}
             onBack={() => setActiveCourse(null)}
             onUpdateTranscripts={setTranscripts}
+            onUpdateMaterials={setMaterials}
             onUpdateTopics={setTopics}
+            onUpdateTopicAssessments={setTopicAssessments}
             onUpdateChats={setCourseChats}
             courseChats={activeCourseChats}
-            LuminaLogo={LuminaLogo}
+            SchoolAILogo={LuminaLogo}
             hiddenCourses={hiddenCourses}
           />
         ) : (
@@ -1003,18 +1219,27 @@ Data follows:\n${canvasSummary}`;
             {!activeChatId || messages.length === 0 ? (
               <div className="welcome-screen">
                 <LuminaLogo size={64} />
-                <h1 className="welcome-title">School AI</h1>
+                <h1 className="welcome-title">Lumina</h1>
                 <p className="welcome-subtitle">
                   Your intelligent study companion. Ask a question, load your assignments, or share your class notes to get started.
                 </p>
                 <div className="welcome-cards">
                   {[
                     { key: 'ask', icon: Icon.question, title: 'Ask a Question', desc: 'Get guided through any subject with targeted hints' },
-                    { key: 'canvas', icon: Icon.layers, title: 'Canvas Assignments', desc: 'Pull your assignments from Canvas LMS and get help' },
-                    { key: 'transcript', icon: Icon.fileText, title: 'Class Transcript', desc: 'Paste or record your lesson notes for context' },
+                    { key: 'canvas', icon: Icon.book, title: 'Canvas Assignments', desc: 'Pull your assignments from Canvas LMS and get help' },
+                    { key: 'courses', icon: Icon.layers, title: 'Your Courses', desc: 'Open a course workspace with lecture content, topics, and assignment help' },
                     { key: 'settings', icon: Icon.gear, title: 'Configure', desc: 'Set up your API keys and Canvas integration' },
                   ].map(card => (
-                    <div key={card.key} className="welcome-card" onClick={() => welcomeAction(card.key)}>
+                    <div key={card.key} className="welcome-card" onClick={() => {
+                      if (card.key === 'courses') {
+                        if (canvasUrl && canvasToken && derivedCourses.length === 0) loadCanvas();
+                        setShowCourseManager(true);
+                        // Scroll to inline course section
+                        document.querySelector('.inline-course-dashboard')?.scrollIntoView({ behavior: 'smooth' });
+                      } else {
+                        welcomeAction(card.key);
+                      }
+                    }}>
                       <div className="card-icon">{card.icon}</div>
                       <div className="card-title">{card.title}</div>
                       <div className="card-desc">{card.desc}</div>
@@ -1026,10 +1251,13 @@ Data follows:\n${canvasSummary}`;
                 {derivedCourses.length > 0 && (
                   <div className="inline-course-dashboard">
                     <h2>Your Courses</h2>
+                    <p className="inline-course-summary">
+                      Open a course workspace for chat, assignments, mind maps, and lecture content.
+                    </p>
                     <div className="inline-course-grid">
-                      {derivedCourses.slice(0, 6).map((course, idx) => (
+                      {homepageCourses.map(course => (
                         <div key={course.id} className="inline-course-card" onClick={() => handleSelectCourse(course)}>
-                          <div className="inline-course-name">{course.name.replace(/\s*\d{4}-\d{2,4}\s*/g, '').replace(/\s*(SL|HL|SL\/HL)\s*/gi, '').replace(/\s*IB\s*DP\s*/gi, '').trim()}</div>
+                          <div className="inline-course-name">{formatCourseLabel(course.name)}</div>
                           <span className="inline-course-arrow">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                               <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
@@ -1038,8 +1266,131 @@ Data follows:\n${canvasSummary}`;
                         </div>
                       ))}
                     </div>
-                    {derivedCourses.length > 6 && (
-                      <button className="btn-secondary" onClick={() => { setActiveCourse(null); if (canvasUrl && canvasToken) loadCanvas(); setShowCanvas(true); }}>View All Courses</button>
+                    <div className="inline-course-actions">
+                      <button className={`inline-course-manager-btn ${showCourseManager ? 'active' : ''}`} onClick={toggleCourseManager}>
+                        {showCourseManager ? 'Hide Course Manager' : 'View All Courses'}
+                      </button>
+                    </div>
+
+                    {showCourseManager && (
+                      <div className="inline-course-manager-panel">
+                        <div className="inline-course-manager-top">
+                          <div>
+                            <h3>Choose what shows in Your Courses</h3>
+                            <p>
+                              Click a homepage slot to select it, then click a course below to swap it in. You can also clear a slot to leave an empty box.
+                            </p>
+                          </div>
+
+                          <div className="course-slot-stepper">
+                            <span className="course-slot-label">Visible slots</span>
+                            <div className="course-slot-controls">
+                              <button
+                                type="button"
+                                className="course-slot-btn"
+                                onClick={() => changeVisibleCourseSlots(-1)}
+                                disabled={clampedVisibleCourseSlots <= 6}
+                              >
+                                −
+                              </button>
+                              <span className="course-slot-value">{clampedVisibleCourseSlots}</span>
+                              <button
+                                type="button"
+                                className="course-slot-btn"
+                                onClick={() => changeVisibleCourseSlots(1)}
+                                disabled={clampedVisibleCourseSlots >= maxVisibleCourseSlots}
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="course-manager-section-title">
+                          <h4>Homepage slots</h4>
+                          <p>
+                            {selectedHomepageSlot == null
+                              ? 'Choose a slot above, then pick a course below.'
+                              : `Slot ${selectedHomepageSlot + 1} is selected. Pick a course below to swap it in.`}
+                          </p>
+                        </div>
+
+                        <div className="course-manager-grid homepage-slots-grid">
+                          {featuredCourses.map((course, index) => {
+                            const isSelected = selectedHomepageSlot === index;
+                            return (
+                              <div
+                                key={`homepage-slot-${index}`}
+                                className={`course-manager-card featured selectable ${isSelected ? 'selected' : ''} ${course ? '' : 'empty-slot'}`}
+                                onClick={() => toggleHomepageSlotSelection(index)}
+                              >
+                                <div className="course-manager-card-top">
+                                  <span className="course-manager-rank">Slot {index + 1}</span>
+                                  <span className={`course-manager-chip featured ${course ? '' : 'empty'}`}>
+                                    {course ? 'Homepage' : 'Empty'}
+                                  </span>
+                                </div>
+                                <div className="course-manager-card-name">
+                                  {course ? formatCourseLabel(course.name) : 'Empty homepage slot'}
+                                </div>
+                                <div className="course-manager-card-hint">
+                                  {isSelected
+                                    ? 'Now click a course below to swap it into this slot.'
+                                    : course
+                                      ? 'Click to choose this slot, or clear it to leave an empty box.'
+                                      : 'Click to choose this empty slot for a new course.'}
+                                </div>
+                                {course && (
+                                  <button
+                                    type="button"
+                                    className="course-manager-card-action"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      clearHomepageSlot(index);
+                                    }}
+                                  >
+                                    Clear slot
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="course-manager-section-title pool-title">
+                          <h4>Other courses</h4>
+                          <p>
+                            Click one of these after selecting a homepage slot and it will swap into that slot.
+                          </p>
+                        </div>
+
+                        <div className="course-manager-grid pool-grid">
+                          {availableCourses.map(course => (
+                            <button
+                              key={course.id}
+                              type="button"
+                              className={`course-manager-card course-manager-pool-card ${selectedHomepageSlot == null ? 'disabled' : 'pickable'}`}
+                              onClick={() => assignCourseToHomepageSlot(course.id)}
+                              disabled={selectedHomepageSlot == null}
+                            >
+                              <div className="course-manager-card-top">
+                                <span className="course-manager-rank">Available</span>
+                                <span className="course-manager-chip">More courses</span>
+                              </div>
+                              <div className="course-manager-card-name">{formatCourseLabel(course.name)}</div>
+                              <div className="course-manager-card-hint">
+                                {selectedHomepageSlot == null
+                                  ? 'Select a homepage slot first.'
+                                  : `Swap into slot ${selectedHomepageSlot + 1}.`}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+
+                        <p className="inline-course-manager-footnote">
+                          Showing {featuredCourseCount} of {orderedCourses.length} courses on the homepage, with {clampedVisibleCourseSlots - featuredCourseCount} empty slot{clampedVisibleCourseSlots - featuredCourseCount === 1 ? '' : 's'} available.
+                        </p>
+                      </div>
                     )}
                   </div>
                 )}
@@ -1057,7 +1408,7 @@ Data follows:\n${canvasSummary}`;
                     </div>
                     <div className="message-content">
                       <div className="message-role-row">
-                        <span className="message-role">{msg.role === 'user' ? 'You' : 'School AI'}</span>
+                        <span className="message-role">{msg.role === 'user' ? 'You' : 'Lumina'}</span>
                         {msg.role === 'assistant' && msg.content && !isStreaming && (
                           <button
                             className={`tts-btn ${speakingMsgId === msg.id ? 'speaking' : ''}`}
@@ -1071,6 +1422,7 @@ Data follows:\n${canvasSummary}`;
                       <MessageRenderer
                         content={msg.content}
                         isStreaming={isStreaming && i === messages.length - 1}
+                        onStartQuiz={(quizParams) => setActiveQuiz(quizParams)}
                       />
                     </div>
                   </div>
@@ -1087,7 +1439,7 @@ Data follows:\n${canvasSummary}`;
             {transcript.trim() && (
               <div className="transcript-pill">
                 <span>{Icon.clipboard}</span>
-                <span>Class transcript active</span>
+                <span>Extra study context active</span>
                 <button onClick={() => setTranscript('')}>{Icon.close}</button>
               </div>
             )}
@@ -1196,34 +1548,6 @@ Data follows:\n${canvasSummary}`;
           </button>
         </div>
       )
-      }
-
-      {/* ---- TRANSCRIPT PANEL ---- */}
-      {
-        showTranscript && (
-          <div className="side-panel">
-            <div className="panel-header">
-              <h3>Class Transcript</h3>
-              <button className="modal-close" onClick={() => setShowTranscript(false)}>{Icon.close}</button>
-            </div>
-            <div className="panel-body">
-              <textarea
-                value={transcript}
-                onChange={e => setTranscript(e.target.value)}
-                placeholder="Paste your class transcript here, or use the microphone in the chat to transcribe live audio.
-
-The AI will use this as context when answering your questions."
-              />
-            </div>
-            <div className="panel-footer">
-              <button className="btn-secondary" onClick={() => setTranscript('')}>Clear</button>
-              <button className="btn-primary" onClick={() => {
-                setShowTranscript(false);
-                if (transcript.trim()) setInput(`Here is my class transcript for context:\n\n${transcript.trim()}\n\nCan you help me understand the key concepts from this lesson?`);
-              }}>Use in Chat</button>
-            </div>
-          </div>
-        )
       }
 
       {/* ---- CANVAS HUB PANEL ---- */}
@@ -1351,6 +1675,18 @@ The AI will use this as context when answering your questions."
         )
       }
 
+      {/* QUIZ OVERLAY */}
+      {activeQuiz && (
+        <QuizView
+          topic={activeQuiz.topic}
+          count={activeQuiz.count}
+          courseName="General Knowledge"
+          transcripts={[]}
+          apiKey={apiKey}
+          onClose={() => setActiveQuiz(null)}
+        />
+      )}
+
       {/* ---- SETTINGS MODAL ---- */}
       {
         showSettings && (
@@ -1400,26 +1736,25 @@ The AI will use this as context when answering your questions."
       {/* ---- HELP MODAL ---- */}
       {showHelp && (
         <div className="modal-overlay" onClick={() => setShowHelp(false)}>
-          <div className="modal help-modal" onClick={e => e.stopPropagation()}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h2>Help & Usage Guide</h2>
               <button className="modal-close" onClick={() => setShowHelp(false)}>{Icon.close}</button>
             </div>
-            <div className="modal-body" style={{ overflowY: 'auto', maxHeight: '60vh', lineHeight: '1.6' }}>
+            <div className="modal-body">
               <h3>Welcome to Lumina</h3>
-              <p>Lumina is your intelligent study companion designed to seamlessly integrate with your coursework.</p>
+              <p>Lumina is your intelligent AI companion designed to help you organize, understand, and excel in your courses.</p>
 
-              <h4 style={{ marginTop: '16px' }}>Canvas Assignments</h4>
-              <p>Connect your Canvas LMS account in Settings to automatically sync your assignments. Lumina can read assignment descriptions and guide you through them.</p>
-
-              <h4 style={{ marginTop: '16px' }}>Class Transcripts</h4>
-              <p>Whenever you paste or speak your class transcript into the Class Transcripts panel, Lumina uses that specific context to emulate your teacher and explain concepts accurately grounded in what was covered.</p>
-
-              <h4 style={{ marginTop: '16px' }}>Course Hubs</h4>
-              <p>Click "My Courses" to enter a dedicated zone for a specific class. Any chats inside a Course Hub are tailored to that course's syllabus and recent assignments.</p>
-
-              <h4 style={{ marginTop: '16px' }}>Document Context</h4>
-              <p>You can paste Google Doc links directly into the chat. Lumina will attempt to retrieve the text and use it as context for your questions.</p>
+              <h4 style={{ marginTop: '16px' }}>Features</h4>
+              <ul style={{ paddingLeft: '20px', lineHeight: '1.6' }}>
+                <li><strong>Your Courses:</strong> Enter a dedicated space for any course to get tailored help based on its lecture content, topics, and assignments.</li>
+                <li><strong>Canvas Assignments:</strong> Connect your LMS to automatically track and receive hints on upcoming assignments.</li>
+                <li><strong>Lecture Content:</strong> Paste, record, upload, or transcribe lecture notes directly inside each course workspace.</li>
+                <li><strong>Voice Mode:</strong> Tap the microphone or the voice mode circle to converse with Lumina hands-free.</li>
+              </ul>
+              <div className="form-actions" style={{ marginTop: '24px' }}>
+                <button type="button" className="btn-primary" onClick={() => setShowHelp(false)}>Got it!</button>
+              </div>
             </div>
           </div>
         </div>

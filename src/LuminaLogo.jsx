@@ -9,13 +9,16 @@ export default function LuminaLogo({ size = 32, color = '#111111' }) {
             viewBox="0 0 100 100"
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
+            className="lumina-logo-svg"
         >
+            {/* Hand-drawn organic blob shape from reference */}
             <path
-                d="M50 15C65 15 70 25 75 35C85 35 95 45 90 60C85 75 75 75 65 85C55 95 45 95 35 85C25 75 15 75 10 60C5 45 15 35 25 35C30 25 35 15 50 15Z"
-                fill={color}
+                d="M52 10C61 10 66 18 74 24C86 32 96 46 90 62C84 78 72 78 60 88C48 98 36 94 24 84C12 74 6 62 8 46C10 30 22 22 32 24C38 18 44 10 52 10Z"
+                fill="#000000"
             />
-            <circle cx="40" cy="55" r="8" fill="white" />
-            <circle cx="60" cy="55" r="8" fill="white" />
+            {/* Asymmetrical white tilted oval eyes */}
+            <ellipse cx="43" cy="53" rx="7.5" ry="10.5" fill="white" transform="rotate(-6, 43, 53)" />
+            <ellipse cx="59" cy="53" rx="7.5" ry="10.5" fill="white" transform="rotate(6, 59, 53)" />
         </svg>
     );
 }

@@ -863,3 +863,108 @@ test('shouldRefreshCanvasContext refreshes stale or suspicious cached assignment
     },
   ], now - (16 * 60 * 1000), now), true);
 });
+
+test('fetchAllCanvasData preserves score and grade when deduping richer assignment sources', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async (url) => {
+    const decodedUrl = decodeURIComponent(url);
+
+    if (decodedUrl.includes('/api/v1/users/self/favorites/courses?')) {
+      return {
+        ok: true,
+        json: async () => [
+          { id: 101, name: 'IB Global Politics', workflow_state: 'available', term: { name: '2025-26' } },
+        ],
+      };
+    }
+
+    if (decodedUrl.includes('/api/v1/courses?')) {
+      return {
+        ok: true,
+        json: async () => [
+          { id: 101, name: 'IB Global Politics', workflow_state: 'available', term: { name: '2025-26' } },
+        ],
+      };
+    }
+
+    if (decodedUrl.includes('/api/v1/users/self/upcoming_events?')) {
+      return {
+        ok: true,
+        json: async () => [
+          {
+            id: 'assignment_9001',
+            title: 'Reading 24.B',
+            description: null,
+            start_at: '2026-03-09T05:00:00Z',
+            end_at: '2026-03-09T05:00:00Z',
+            context_code: 'course_101',
+            assignment: {
+              id: 9001,
+              name: 'Reading 24.B',
+              description: '<p>Explain de facto power and de jure authority.</p>',
+              due_at: '2026-03-09T05:00:00Z',
+              course_id: 101,
+              points_possible: 20,
+              html_url: 'https://canvas.example.com/courses/101/assignments/9001',
+            },
+            submission: {
+              entered_score: 18,
+              entered_grade: '90%',
+            },
+            html_url: 'https://canvas.example.com/courses/101/assignments/9001',
+          },
+        ],
+      };
+    }
+
+    if (
+      decodedUrl.includes('/api/v1/users/self/todo?')
+      || decodedUrl.includes('/api/v1/users/self/missing_submissions?')
+      || decodedUrl.includes('/api/v1/users/self/activity_stream?')
+      || decodedUrl.includes('/api/v1/announcements?')
+    ) {
+      return {
+        ok: true,
+        json: async () => [],
+      };
+    }
+
+    if (decodedUrl.includes('/api/v1/courses/101/assignments?')) {
+      return {
+        ok: true,
+        json: async () => [
+          {
+            id: 9001,
+            name: 'Reading 24.B',
+            description: '<p>Older course assignment payload</p>',
+            due_at: null,
+            all_dates: [],
+            overrides: [],
+            course_id: 101,
+            points_possible: 20,
+            html_url: 'https://canvas.example.com/courses/101/assignments/9001',
+          },
+        ],
+      };
+    }
+
+    throw new Error(`Unexpected fetch URL in test: ${decodedUrl}`);
+  };
+
+  try {
+    const canvasItems = await fetchAllCanvasData('https://canvas.example.com', 'token');
+    const assignment = canvasItems.find(item => item.type === 'assignment' && item.id === 9001);
+
+    assert.ok(assignment);
+    assert.equal(canvasItems.filter(item => item.type === 'assignment' && item.id === 9001).length, 1);
+    assert.equal(assignment.source, 'upcoming_event');
+    assert.equal(assignment.description, 'Explain de facto power and de jure authority.');
+    assert.equal(assignment.due_at, '2026-03-09T05:00:00Z');
+    assert.equal(assignment.score, 18);
+    assert.equal(assignment.grade, '90%');
+    assert.equal(assignment.points_possible, 20);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

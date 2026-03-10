@@ -76,6 +76,35 @@ export function parseCanvasDate(dateStr) {
     return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function pickDefinedValue(...values) {
+    for (const value of values) {
+        if (value !== undefined && value !== null && value !== '') return value;
+    }
+    return null;
+}
+
+function extractAssignmentPerformance(...sources) {
+    const items = sources.filter(Boolean);
+    return {
+        score: pickDefinedValue(...items.flatMap(item => [
+            item?.score,
+            item?.entered_score,
+            item?.posted_score,
+            item?.submission?.score,
+            item?.submission?.entered_score,
+            item?.submission?.posted_score,
+        ])),
+        grade: pickDefinedValue(...items.flatMap(item => [
+            item?.grade,
+            item?.entered_grade,
+            item?.posted_grade,
+            item?.submission?.grade,
+            item?.submission?.entered_grade,
+            item?.submission?.posted_grade,
+        ])),
+    };
+}
+
 function startOfDay(date) {
     return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
@@ -218,10 +247,13 @@ function buildDerivedCourseItems(items) {
 
 export function normalizeCanvasItem(item) {
     const normalizedDate = getRelevantCanvasDate(item);
+    const performance = extractAssignmentPerformance(item, item?.assignment, item?.submission, item?.submission?.assignment);
     return {
         ...item,
         date: normalizedDate,
         due_at: item?.due_at || normalizedDate,
+        score: pickDefinedValue(item?.score, performance.score),
+        grade: pickDefinedValue(item?.grade, performance.grade),
     };
 }
 
@@ -567,6 +599,7 @@ export async function fetchCanvasPages(canvasUrl, apiToken, courseId) {
 
 function normalizeCourseAssignmentItem(course, assignment) {
     const effectiveDue = getEffectiveAssignmentDueDate(assignment);
+    const performance = extractAssignmentPerformance(assignment);
 
     return normalizeCanvasItem({
         type: 'assignment',
@@ -578,6 +611,8 @@ function normalizeCourseAssignmentItem(course, assignment) {
         course_id: course.id,
         course_name: course.name,
         points_possible: assignment.points_possible,
+        score: performance.score,
+        grade: performance.grade,
         html_url: assignment.html_url,
         source: 'course_assignment',
     });
@@ -588,6 +623,7 @@ function normalizeUpcomingEventItem(event, courseLookups) {
 
     const assignment = event.assignment;
     const effectiveDue = getEffectiveAssignmentDueDate(assignment);
+    const performance = extractAssignmentPerformance(assignment, event, event?.submission);
 
     return normalizeCanvasItem({
         type: 'assignment',
@@ -599,6 +635,8 @@ function normalizeUpcomingEventItem(event, courseLookups) {
         course_id: assignment.course_id ?? event.course_id ?? null,
         course_name: resolveCanvasCourseName(event, courseLookups),
         points_possible: assignment.points_possible,
+        score: performance.score,
+        grade: performance.grade,
         html_url: assignment.html_url || event.html_url,
         source: 'upcoming_event',
     });
@@ -610,6 +648,7 @@ function normalizeTodoItem(todoItem, courseLookups) {
 
     const effectiveDue = getEffectiveAssignmentDueDate(workItem);
     const courseId = resolveCanvasCourseId(todoItem) ?? resolveCanvasCourseId(workItem);
+    const performance = extractAssignmentPerformance(workItem, todoItem, todoItem?.submission);
 
     return normalizeCanvasItem({
         type: 'assignment',
@@ -621,6 +660,8 @@ function normalizeTodoItem(todoItem, courseLookups) {
         course_id: courseId,
         course_name: resolveCanvasCourseName(todoItem, courseLookups),
         points_possible: workItem.points_possible,
+        score: performance.score,
+        grade: performance.grade,
         html_url: workItem.html_url || todoItem.html_url,
         source: 'todo',
     });
@@ -635,6 +676,7 @@ function normalizeMissingSubmissionItem(missingItem, courseLookups) {
         || missingItem?.due_at
         || null;
     const courseId = resolveCanvasCourseId(missingItem) ?? resolveCanvasCourseId(assignment);
+    const performance = extractAssignmentPerformance(assignment, missingItem, missingItem?.submission, missingItem?.submission?.assignment);
 
     return normalizeCanvasItem({
         type: 'assignment',
@@ -648,6 +690,8 @@ function normalizeMissingSubmissionItem(missingItem, courseLookups) {
         course_id: courseId,
         course_name: resolveCanvasCourseName(missingItem, courseLookups),
         points_possible: assignment?.points_possible ?? null,
+        score: performance.score,
+        grade: performance.grade,
         html_url: assignment?.html_url || missingItem?.html_url || null,
         source: 'missing_submission',
         missing: true,
@@ -664,6 +708,7 @@ function normalizeActivityStreamItem(streamItem, courseLookups) {
         || streamItem?.due_at
         || streamItem?.assignment_due_at
         || null;
+    const performance = extractAssignmentPerformance(assignment, streamItem, streamItem?.submission, streamItem?.submission?.assignment);
 
     return normalizeCanvasItem({
         type: 'assignment',
@@ -677,6 +722,8 @@ function normalizeActivityStreamItem(streamItem, courseLookups) {
         course_id: resolveCanvasCourseId(streamItem) ?? resolveCanvasCourseId(assignment),
         course_name: resolveCanvasCourseName(streamItem, courseLookups),
         points_possible: assignment?.points_possible ?? null,
+        score: performance.score,
+        grade: performance.grade,
         html_url: assignment?.html_url || streamItem?.html_url || null,
         source: 'activity_stream',
     });
@@ -712,6 +759,8 @@ function getCanvasItemPriority(item) {
     if (parseCanvasDate(item?.due_at || item?.date)) score += 50;
     if (item?.description && item.description !== 'No description') score += 5;
     if (item?.html_url) score += 5;
+    if (item?.missing) score += 8;
+    if (pickDefinedValue(item?.score, item?.grade) !== null) score += 12;
 
     return score;
 }
@@ -736,6 +785,8 @@ function mergeCanvasItems(existingItem, incomingItem) {
             : fallbackItem.course_name,
         html_url: preferredItem.html_url || fallbackItem.html_url,
         points_possible: preferredItem.points_possible ?? fallbackItem.points_possible,
+        score: pickDefinedValue(preferredItem.score, fallbackItem.score),
+        grade: pickDefinedValue(preferredItem.grade, fallbackItem.grade),
         missing: preferredItem.missing ?? fallbackItem.missing,
     });
 }
@@ -754,7 +805,22 @@ function dedupeCanvasItems(items) {
 }
 
 export async function fetchAllCanvasData(canvasUrl, apiToken) {
+    const cacheKey = `canvas_data_${canvasUrl}_${apiToken.slice(-6)}`;
+    const cacheTimeKey = `${cacheKey}_timestamp`;
+    const storage = typeof localStorage !== 'undefined' ? localStorage : null;
+
     try {
+        // Try to load from cache first
+        const cachedData = storage?.getItem(cacheKey);
+        const cachedTime = storage?.getItem(cacheTimeKey);
+        const now = Date.now();
+
+        if (cachedData && cachedTime && (now - Number(cachedTime) < CANVAS_CONTEXT_MAX_AGE_MS)) {
+            console.log('[SchoolAI Canvas] Loading from local cache...');
+            return JSON.parse(cachedData);
+        }
+
+        console.log('[SchoolAI Canvas] Cache expired or missing. Fetching fresh data...');
         const courses = await fetchCanvasCourses(canvasUrl, apiToken);
         const courseIds = new Set(courses.map(c => c.id));
         const courseLookups = buildCourseNameLookups(courses);
@@ -793,9 +859,9 @@ export async function fetchAllCanvasData(canvasUrl, apiToken) {
                     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${apiToken}` } });
                     if (res.ok) {
                         const course = await res.json();
-                    if (!isCurrentCanvasCourse(course)) return null;
-                    console.log(`[SchoolAI Canvas]   Recovered missing course: "${course.name}" (ID: ${course.id})`);
-                    return course;
+                        if (!isCurrentCanvasCourse(course)) return null;
+                        console.log(`[SchoolAI Canvas]   Recovered missing course: "${course.name}" (ID: ${course.id})`);
+                        return course;
                     }
                 } catch (e) {
                     console.warn(`[SchoolAI Canvas] Failed to fetch missing course ${cid}:`, e);
@@ -881,6 +947,14 @@ export async function fetchAllCanvasData(canvasUrl, apiToken) {
             if (!dateB) return -1;
             return dateB.getTime() - dateA.getTime();
         });
+
+        // Save to cache
+        try {
+            storage?.setItem(cacheKey, JSON.stringify(dedupedData));
+            storage?.setItem(cacheTimeKey, Date.now().toString());
+        } catch (e) {
+            console.warn('[SchoolAI Canvas] Failed to save to cache (likely storage limit):', e);
+        }
 
         return dedupedData;
     } catch (e) {
